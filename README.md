@@ -118,14 +118,19 @@ docker run --rm --user $(id -u):$(id -g) -v ~/t/ibmdocs-data:/data ibmdocs:lates
 
 ### Build from source
 
-Requires the dev container (no local Go toolchain needed):
+Requires Docker (no local Go toolchain needed). The dev container runs as your
+host user — `UID` and `GID` are passed so the Go caches written into `.cache/`
+inside the repo are owned by you:
 
 ```sh
 git clone https://github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli
 cd 7u-ibm-doc-fetcher-cli
 
+# Build the dev image once (or after Dockerfile changes)
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml build
+
 # Build all five platform targets
-docker compose -f dev-compose.yml run --rm dev make build-all
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev make build-all
 
 # Binaries land in target/bin/
 ```
@@ -380,19 +385,42 @@ topics vs. concept/task documentation.
 
 ## Development
 
+The dev container runs as your host user so all build artefacts and Go caches
+(written to `.cache/` inside the repo) remain yours. Prefix every
+`docker compose` invocation with `UID=$(id -u) GID=$(id -g)`, or export them
+once for your session:
+
 ```sh
+export UID=$(id -u) GID=$(id -g)
+```
+
+```sh
+# Build the dev image (once, or after .devcontainer/ibmdocs-dev01/Dockerfile changes)
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml build
+
 # Interactive shell in the dev container
-docker compose -f dev-compose.yml run --rm dev sh
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev sh
 
 # Run tests
-docker compose -f dev-compose.yml run --rm dev make test
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev make test
 
 # Run linter
-docker compose -f dev-compose.yml run --rm dev make lint
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev make lint
 
-# Build single native binary
-docker compose -f dev-compose.yml run --rm dev make build
+# Build single native binary (current OS/arch)
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev make build
+
+# Build all five platform targets — binaries land in target/bin/
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev make build-all
+
+# Update Go dependencies (e.g. after editing go.mod)
+UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml run --rm dev go mod tidy
 ```
+
+**Go cache location:** `GOCACHE`, `GOMODCACHE`, and `GOPATH` all resolve to
+subdirectories of `.cache/` inside the repo root, so caches persist across
+container runs and are owned by your host user. The `.cache/` folder is
+git-ignored.
 
 A VSCode devcontainer is provided at `.devcontainer/ibmdocs-dev01/` with the
 Go extension, GitLens, and ShellCheck pre-configured.

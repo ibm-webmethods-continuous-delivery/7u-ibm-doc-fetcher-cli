@@ -7,8 +7,13 @@
 #   docker compose -f dev-compose.yml run --rm dev go test ./...
 #   docker compose -f dev-compose.yml run --rm dev sh   # interactive shell
 #
-# The repo is mounted read-write at /workspace so build artefacts (target/)
-# and the Go module cache persist across runs via named volumes.
+# The repo is mounted read-write at /workspace so build artefacts (target/),
+# the Go build cache (.cache/go-build) and the module cache (.cache/pkg/mod)
+# persist across runs inside the repo tree, owned by the calling user.
+#
+# UID/GID are taken from the host shell at runtime (fall back to 501:20).
+# Re-build the image when the Dockerfile changes:
+#   UID=$(id -u) GID=$(id -g) docker compose -f dev-compose.yml build
 
 services:
   dev:
@@ -16,14 +21,17 @@ services:
       context: .devcontainer/ibmdocs-dev01
       dockerfile: Dockerfile
       args:
-        __uid: "501"
-        __gid: "20"
+        __uid: "${UID:-501}"
+        __gid: "${GID:-20}"
     image: ibmdocs-dev:local
-    user: "501:20"
+    user: "${UID:-501}:${GID:-20}"
     working_dir: /workspaces/7u-ibm-doc-fetcher-cli
     volumes:
       - .:/workspaces/7u-ibm-doc-fetcher-cli   # repo root — source + build output
     environment:
       - CGO_ENABLED=0
+      - GOPATH=/workspaces/7u-ibm-doc-fetcher-cli/.cache/gopath
+      - GOCACHE=/workspaces/7u-ibm-doc-fetcher-cli/.cache/go-build
+      - GOMODCACHE=/workspaces/7u-ibm-doc-fetcher-cli/.cache/pkg/mod
     stdin_open: true
     tty: true
