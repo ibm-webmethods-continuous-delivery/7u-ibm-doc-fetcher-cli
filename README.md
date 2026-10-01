@@ -1,1 +1,2 @@
-# 7u-ibm-doc-fetcher-cli
+# CLI Utility - IBM Public Documentation Fetcher
+
