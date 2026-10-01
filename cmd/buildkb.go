@@ -94,40 +94,75 @@ under kb/, applying YAML frontmatter and updating INDEX.md files. Idempotent.`,
 				continue
 			}
 
-			md, lastUpdated, err := kb.ConvertHTML(cached.HTML)
-			if err != nil {
-				logger.Warn("HTML conversion failed", "topic", e.topicID, "err", err)
-				skipped++
-				continue
+			// Use the authoritative productKey and topicID
+			effectiveProductKey := cached.ProductKey
+			if effectiveProductKey == "" {
+				effectiveProductKey = e.productKey
+			}
+			effectiveTopicID := topicIDFromHref(cached.Href)
+			if effectiveTopicID == "" {
+				effectiveTopicID = e.topicID
 			}
 
-			isStub := kb.EffectiveLen(md) < kb.MinContentChars
-			fm := kb.ExtractFrontmatter(md, e.productKey, e.topicID, lastUpdated)
-			if isStub {
-				fm["stub"] = true
-			}
+			var content string
+			var md string
+			var fm map[string]any
+			var isStub bool
 
-			content := kb.RenderFrontmatter(fm) + md
+			cleanHref := cached.Href
+			if q := strings.Index(cleanHref, "?"); q >= 0 {
+				cleanHref = cleanHref[:q]
+			}
+			isStaticSpec := strings.HasSuffix(strings.ToLower(cleanHref), ".yaml") ||
+				strings.HasSuffix(strings.ToLower(cleanHref), ".yml") ||
+				strings.HasSuffix(strings.ToLower(cleanHref), ".json")
+
+			if isStaticSpec {
+				content = cached.HTML
+				md = cached.HTML
+				fm = map[string]any{
+					"product": effectiveProductKey,
+					"topic":   effectiveTopicID,
+					"spec":    true,
+				}
+			} else {
+				var lastUpdated string
+				var err error
+				md, lastUpdated, err = kb.ConvertHTML(cached.HTML)
+				if err != nil {
+					logger.Warn("HTML conversion failed", "topic", effectiveTopicID, "err", err)
+					skipped++
+					continue
+				}
+
+				isStub = kb.EffectiveLen(md) < kb.MinContentChars
+				fm = kb.ExtractFrontmatter(md, effectiveProductKey, effectiveTopicID, lastUpdated)
+				if isStub {
+					fm["stub"] = true
+				}
+
+				content = kb.RenderFrontmatter(fm) + md
+			}
 
 			if !buildKBFlags.dryRun {
-				if wErr := kb.WriteTopicFile(cfg.DataDir, e.productKey, e.topicID, e.lang, content); wErr != nil {
+				if wErr := kb.WriteTopicFile(cfg.DataDir, effectiveProductKey, effectiveTopicID, e.lang, content); wErr != nil {
 					logger.Warn("kb write failed", "err", wErr)
 					skipped++
 					continue
 				}
 			} else {
-				fmt.Fprintf(os.Stderr, "  DRY  kb/%s/%s/%s.md\n", e.productKey, e.topicID, e.lang)
+				fmt.Fprintf(os.Stderr, "  DRY  kb/%s/%s/%s.md\n", effectiveProductKey, effectiveTopicID, e.lang)
 			}
 			written++
 
-			p := products[e.productKey]
+			p := products[effectiveProductKey]
 			if p == nil {
 				p = &product{}
-				products[e.productKey] = p
+				products[effectiveProductKey] = p
 			}
 			p.topics = append(p.topics, kb.Topic{
-				ProductKey:  e.productKey,
-				TopicID:     e.topicID,
+				ProductKey:  effectiveProductKey,
+				TopicID:     effectiveTopicID,
 				Lang:        e.lang,
 				Markdown:    md,
 				Frontmatter: fm,

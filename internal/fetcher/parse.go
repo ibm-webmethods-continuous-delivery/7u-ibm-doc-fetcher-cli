@@ -33,45 +33,61 @@ func labelToSlug(label string) string {
 var dashOrUnderscore = regexp.MustCompile(`[-_]`)
 
 // SlugMatches reports whether a URL topic slug matches a TOC node's href
-// filename or label. Implements the three-strategy algorithm from the spike:
+// filename or label. Implements a multi-strategy matching algorithm:
 //
 //  1. Label-derived slug match
 //  2. Exact filename match
-//  3. Progressive suffix match (handles "references-public-apis" → "public-apis")
+//  3. Progressive suffix / prefix match (handles "references-public-apis" → "public-apis")
+//  4. Label substring / suffix match (handles compound navigation breadcrumbs)
 func SlugMatches(slug, href, label string) bool {
 	slugNorm := dashOrUnderscore.ReplaceAllString(strings.ToLower(slug), "-")
 
-	// Strategy 1: label-derived slug
-	if label != "" && labelToSlug(label) == slugNorm {
-		return true
-	}
-
-	if href == "" {
-		return false
-	}
-
-	// Strip ?cp= and any query params, take the basename, strip .html
-	clean := href
-	if idx := strings.Index(clean, "?"); idx >= 0 {
-		clean = clean[:idx]
-	}
-	fname := strings.TrimSuffix(filepath_Base(clean), ".html")
-	fnameNorm := dashOrUnderscore.ReplaceAllString(strings.ToLower(fname), "-")
-
-	// Strategy 2: exact filename match
-	if fnameNorm == slugNorm {
-		return true
-	}
-
-	// Strategy 3: progressive suffix — slug may have a section prefix
-	// e.g. "references-public-apis" → try "public-apis" (min 6 chars)
-	parts := strings.Split(slugNorm, "-")
-	for i := 1; i < len(parts); i++ {
-		suffix := strings.Join(parts[i:], "-")
-		if len(suffix) >= 6 && (fnameNorm == suffix || strings.HasSuffix(fnameNorm, "-"+suffix)) {
+	labelSlug := ""
+	if label != "" {
+		labelSlug = labelToSlug(label)
+		// Strategy 1: label-derived slug
+		if labelSlug == slugNorm {
 			return true
 		}
 	}
+
+	cleanFname := ""
+	fnameNorm := ""
+	if href != "" {
+		clean := href
+		if idx := strings.Index(clean, "?"); idx >= 0 {
+			clean = clean[:idx]
+		}
+		cleanFname = strings.TrimSuffix(filepath_Base(clean), ".html")
+		fnameNorm = dashOrUnderscore.ReplaceAllString(strings.ToLower(cleanFname), "-")
+
+		// Strategy 2: exact filename match
+		if fnameNorm == slugNorm {
+			return true
+		}
+	}
+
+	// Strategy 3: progressive suffix / sub-slug matches
+	parts := strings.Split(slugNorm, "-")
+	for i := 1; i < len(parts); i++ {
+		suffix := strings.Join(parts[i:], "-")
+		if len(suffix) >= 4 {
+			if labelSlug != "" && (labelSlug == suffix || strings.HasSuffix(labelSlug, "-"+suffix)) {
+				return true
+			}
+			if fnameNorm != "" && (fnameNorm == suffix || strings.HasSuffix(fnameNorm, "-"+suffix)) {
+				return true
+			}
+		}
+	}
+
+	// Strategy 4: bidirectional containment for compound slugs
+	if labelSlug != "" && len(labelSlug) >= 4 {
+		if strings.HasSuffix(slugNorm, "-"+labelSlug) || strings.HasPrefix(slugNorm, labelSlug+"-") {
+			return true
+		}
+	}
+
 	return false
 }
 

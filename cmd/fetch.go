@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -106,17 +107,28 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 			}
 
 			// Write to KB and print to stdout for single non-quiet fetch.
-			md, lastUpdated, err := kb.ConvertHTML(r.HTML)
-			if err != nil {
-				logger.Warn("HTML conversion failed", "href", r.Href, "err", err)
-				continue
-			}
 			topicID := topicIDFromHref(r.Href)
-			fm := kb.ExtractFrontmatter(md, r.ProductKey, topicID, lastUpdated)
-			if kb.EffectiveLen(md) < config.MinContentChars {
-				fm["stub"] = true
+			var content string
+			var md string
+			if strings.HasSuffix(strings.ToLower(r.Href), ".yaml") || strings.HasSuffix(strings.ToLower(r.Href), ".yml") || strings.HasSuffix(strings.ToLower(r.Href), ".json") {
+				// Static spec asset (OpenAPI, JSON schema, etc.)
+				content = r.HTML
+				md = r.HTML
+			} else {
+				var lastUpdated string
+				var err error
+				md, lastUpdated, err = kb.ConvertHTML(r.HTML)
+				if err != nil {
+					logger.Warn("HTML conversion failed", "href", r.Href, "err", err)
+					continue
+				}
+				fm := kb.ExtractFrontmatter(md, r.ProductKey, topicID, lastUpdated)
+				if kb.EffectiveLen(md) < config.MinContentChars {
+					fm["stub"] = true
+				}
+				content = kb.RenderFrontmatter(fm) + md
 			}
-			content := kb.RenderFrontmatter(fm) + md
+
 			if wErr := kb.WriteTopicFile(cfg.DataDir, r.ProductKey, topicID, r.Lang, content); wErr != nil {
 				logger.Warn("kb write failed", "err", wErr)
 			}

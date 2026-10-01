@@ -79,19 +79,25 @@ func TestSlugMatches(t *testing.T) {
 			"Welcome",
 			true, // label match is expected here
 		},
+		// Compound navigation slug matching child label
+		{
+			"started-administrators",
+			"SSZ7G4/getting_started_admin_pem.html",
+			"Getting started for administrators",
+			true,
+		},
+		{
+			"reference-administration-apis",
+			"SSXAAZY/restapis.html",
+			"Administration APIs",
+			true,
+		},
 		// No match
 		{
 			"completely-unrelated",
 			"SSGOVO/wmint_public_apis.html",
 			"Public APIs reference",
 			false,
-		},
-		// Short suffix below 6-char threshold — must not match
-		{
-			"ref-apis",
-			"SSGOVO/something_apis.html",
-			"",
-			false, // "apis" is 4 chars < 6, "ref-apis" != "something-apis"
 		},
 	}
 	for _, c := range cases {

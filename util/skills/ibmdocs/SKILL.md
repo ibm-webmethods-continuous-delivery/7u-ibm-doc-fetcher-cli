@@ -25,8 +25,7 @@ If the command is not found, check whether the binary is available under a path-
 Refer the user to the [README installation section](../../../README.md#installation) if the
 binary is missing before continuing.
 
-Use `execute_command` to run all CLI calls in this skill. Set `cwd` to the project's
-`ibmdocs-data` folder (or wherever `--data` points) when the command writes persistent state.
+Use `execute_command` to run all CLI calls in this skill. Pass `-d <path>` or `--data <path>` explicitly whenever writing to or reading from a custom Knowledge Base directory (e.g. `--data /path/to/project/ibmdocs`).
 
 ---
 
@@ -37,6 +36,9 @@ From the user's request, determine:
 1. **Which IBM product(s)** are involved (e.g. `webMethods Integration iPaaS`, `Kubecost`,
    `IBM MQ`, `Db2 on Cloud`).
 2. **Which topic area** is needed (e.g. public APIs, deployment, configuration, monitoring).
+
+> **Note on Umbrella vs Concrete Product URLs**:
+> High-level umbrella library paths (such as `integration-saas-lib`) do not host direct Table of Contents endpoints and will return HTTP 404 from the IBM Docs API. IBM Docs nests product document trees under concrete leaf paths (e.g. `integration-saas-lib/integration-saas/saas`). Always prefer direct concrete product URLs or use Step 3 search to discover the exact leaf product key.
 
 If you already have a direct IBM Docs browser URL for the topic, skip to Step 4.
 
@@ -74,12 +76,13 @@ ibmdocs fetch "<ibm-docs-url>"
 ### Topic with child pages (recommended for implementation tasks)
 
 ```sh
-ibmdocs fetch "<ibm-docs-url>" --recursive --depth 2
+ibmdocs fetch "<ibm-docs-url>" --recursive --depth 2 --data "<data-dir>"
 ```
 
 - `--depth 2` walks 2 levels of child topics in the TOC (up to 10 children per node).
 - Increase depth only if the first fetch clearly misses required sub-topics.
 - The fetch prints Markdown to stdout and writes cache + KB files under the data folder.
+- **CLI Execution Timeout**: Deep recursive walks on large document subtrees with default polite crawling delays (`200ms`) can take over 30 seconds. When invoking `execute_command`, specify an extended timeout (e.g. `timeout_seconds: 120` or higher).
 
 ### Multiple topics from a manifest file
 

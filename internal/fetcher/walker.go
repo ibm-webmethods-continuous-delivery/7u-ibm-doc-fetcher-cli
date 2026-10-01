@@ -114,6 +114,9 @@ func (w *Walker) fetchTOC(productKey string) (*ibmdocs.TOCResponse, error) {
 	w.logger.Info("fetching TOC", "product", productKey)
 	toc, err := w.client.FetchTOC(productKey, w.lang)
 	if err != nil {
+		if strings.Contains(err.Error(), "HTTP 404") {
+			return nil, fmt.Errorf("%w (product key '%s' may be an umbrella collection or invalid; try 'ibmdocs search <keyword>' to locate concrete product leaf URLs)", err, productKey)
+		}
 		return nil, err
 	}
 	if err := cache.SaveJSON(cachePath, toc); err != nil {

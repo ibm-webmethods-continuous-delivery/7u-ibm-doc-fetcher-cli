@@ -146,7 +146,17 @@ func (c *Client) FetchContent(href, lang string) (string, error) {
 	// href may contain / which must stay as path separators, and ?cp= which
 	// must be preserved as a query string. Encode only the path component.
 	var rawURL string
-	if idx := strings.Index(href, "?"); idx >= 0 {
+	cleanHref := href
+	if idx := strings.Index(cleanHref, "?"); idx >= 0 {
+		cleanHref = cleanHref[:idx]
+	}
+	isStaticSpec := strings.HasSuffix(strings.ToLower(cleanHref), ".yaml") ||
+		strings.HasSuffix(strings.ToLower(cleanHref), ".yml") ||
+		strings.HasSuffix(strings.ToLower(cleanHref), ".json")
+
+	if isStaticSpec {
+		rawURL = fmt.Sprintf("%s/docs/api/v1/content/%s?lang=%s", c.baseURL, href, lang)
+	} else if idx := strings.Index(href, "?"); idx >= 0 {
 		pathPart := href[:idx]
 		queryPart := href[idx:]
 		rawURL = fmt.Sprintf("%s/docs/api/v1/content/%s%s&parsebody=true&lang=%s",
