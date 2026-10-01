@@ -1,0 +1,26 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "runArgs": [
+    "--name",
+    "ibmdocs-dev01",
+    "--rm"
+  ],
+  "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "bierner.markdown-mermaid",
+        "eamodio.gitlens",
+        "golang.go",
+        "mhutchie.git-graph",
+        "ms-azuretools.vscode-docker",
+        "oderwat.indent-rainbow",
+        "streetsidesoftware.code-spell-checker",
+        "timonwong.shellcheck",
+        "yzhang.markdown-all-in-one"
+      ]
+    }
+  }
+}

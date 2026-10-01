@@ -1,0 +1,21 @@
+# Build artefacts
+target/
+
+# Go test cache and coverage
+*.out
+coverage.html
+
+# Data folder (runtime state — can be committed if desired, but excluded by default)
+ibmdocs-data/
+
+# HTTP debug dumps (potentially large)
+debug/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+*.swp
+*.swo

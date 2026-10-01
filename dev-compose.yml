@@ -1,0 +1,29 @@
+# Development compose file — mirrors the spike's docker-compose.yml pattern.
+#
+# Usage (from the repo root):
+#   docker compose -f dev-compose.yml run --rm dev make build
+#   docker compose -f dev-compose.yml run --rm dev make test
+#   docker compose -f dev-compose.yml run --rm dev make build-all
+#   docker compose -f dev-compose.yml run --rm dev go test ./...
+#   docker compose -f dev-compose.yml run --rm dev sh   # interactive shell
+#
+# The repo is mounted read-write at /workspace so build artefacts (target/)
+# and the Go module cache persist across runs via named volumes.
+
+services:
+  dev:
+    build:
+      context: .devcontainer/ibmdocs-dev01
+      dockerfile: Dockerfile
+      args:
+        __uid: "501"
+        __gid: "20"
+    image: ibmdocs-dev:local
+    user: "501:20"
+    working_dir: /workspaces/7u-ibm-doc-fetcher-cli
+    volumes:
+      - .:/workspaces/7u-ibm-doc-fetcher-cli   # repo root — source + build output
+    environment:
+      - CGO_ENABLED=0
+    stdin_open: true
+    tty: true
