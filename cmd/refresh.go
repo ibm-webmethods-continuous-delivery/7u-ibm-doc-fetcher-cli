@@ -13,6 +13,7 @@ import (
 var refreshFlags struct {
 	olderThan  int
 	depth      int
+	maxTopics  int
 	dryRun     bool
 	jsonOutput bool
 }
@@ -54,7 +55,7 @@ is older than --older-than days.`,
 				continue
 			}
 			fmt.Fprintf(os.Stderr, "  [%d/%d] %s\n", i+1, len(toRefresh), e.URL)
-			if rErr := runFetch(e.URL, true, depth, true, refreshFlags.jsonOutput, false, 10); rErr != nil {
+			if rErr := runFetch(e.URL, true, depth, true, refreshFlags.jsonOutput, false, refreshFlags.maxTopics); rErr != nil {
 				fmt.Fprintf(os.Stderr, "    [ERROR] %v\n", rErr)
 			}
 		}
@@ -66,6 +67,8 @@ func init() {
 	f := refreshCmd.Flags()
 	f.IntVarP(&refreshFlags.olderThan, "older-than", "o", 7, "Re-fetch entries older than N days")
 	f.IntVarP(&refreshFlags.depth, "depth", "D", 0, "Override stored recursion depth (0 = use stored)")
+	f.IntVar(&refreshFlags.maxTopics, "max-topics", 0,
+		"Maximum child topics per TOC node (0 = unlimited)")
 	f.BoolVar(&refreshFlags.dryRun, "dry-run", false, "Print what would be re-fetched without making network requests")
 	f.BoolVar(&refreshFlags.jsonOutput, "json", false, "Print JSON summary of refresh results")
 	rootCmd.AddCommand(refreshCmd)
