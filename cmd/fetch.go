@@ -65,8 +65,10 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 		debugDir = filepath.Join(cfg.DataDir, "debug")
 	}
 
-	client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, debugDir, logger)
-	w := fetcher.NewWalker(client, cfg.DataDir, cfg.Lang, maxTopics, cfg.Delay, refresh, logger)
+	requestLogPath := filepath.Join(cfg.DataDir, "requests.log")
+
+	client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, debugDir, requestLogPath, logger)
+	w := fetcher.NewWalker(client, cfg.DataDir, cfg.Lang, maxTopics, cfg.Delay, cfg.CacheTTL, refresh, logger)
 
 	maxDepth := 0
 	if recursive {
@@ -207,41 +209,13 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 // Strips the ?cp= query param, takes the basename, removes .html.
 func topicIDFromHref(href string) string {
 	clean := href
-	if idx := len(clean); idx > 0 {
-		if q := indexByte(clean, '?'); q >= 0 {
-			clean = clean[:q]
-		}
+	if q := strings.IndexByte(clean, '?'); q >= 0 {
+		clean = clean[:q]
 	}
-	if i := lastIndexByte(clean, '/'); i >= 0 {
+	if i := strings.LastIndexByte(clean, '/'); i >= 0 {
 		clean = clean[i+1:]
 	}
-	clean = trimSuffix(clean, ".html")
-	return clean
-}
-
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
-func lastIndexByte(s string, b byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
-}
-
-func trimSuffix(s, suffix string) string {
-	if len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix {
-		return s[:len(s)-len(suffix)]
-	}
-	return s
+	return strings.TrimSuffix(clean, ".html")
 }
 
 // buildLogger returns a slog.Logger at the appropriate level.

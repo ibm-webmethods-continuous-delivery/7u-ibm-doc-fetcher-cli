@@ -6,7 +6,7 @@ import (
 
 func TestParseIBMDocsURL(t *testing.T) {
 	cases := []struct {
-		url                          string
+		url                         string
 		wantKey, wantSlug, wantLang string
 	}{
 		{

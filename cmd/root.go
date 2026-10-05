@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -70,6 +71,12 @@ func init() {
 
 	f.DurationVar(&cfg.Delay, "delay", config.DefaultDelay,
 		"Inter-request delay for polite crawling (e.g. 200ms, 0 to disable)")
+
+	f.DurationVar(&cfg.CacheTTL, "cache-ttl",
+		envDurationOr(config.EnvCacheTTL, config.DefaultCacheTTL),
+		"How long a cached entry stays valid before a plain fetch re-hits the network "+
+			"(e.g. 720h = 30 days, 24h, 0 to always treat cache as stale). env: IBMDOCS_CACHE_TTL. "+
+			"Use --refresh on fetch/fetch-file to force a re-fetch for a single invocation regardless of this value.")
 }
 
 // envOr returns the environment variable value or fallback.
@@ -80,3 +87,13 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+// envDurationOr returns the parsed environment variable duration or fallback
+// if unset or invalid.
+func envDurationOr(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return fallback
+}

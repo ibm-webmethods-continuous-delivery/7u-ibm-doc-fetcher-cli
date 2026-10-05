@@ -16,9 +16,6 @@ import (
 	"time"
 )
 
-// TTL is the cache validity window. Entries older than this are stale.
-const TTL = 24 * time.Hour
-
 var cpParamRE = regexp.MustCompile(`\?cp=[^&]*(&.*)?$`)
 
 // KeyTOC returns the filesystem path for a TOC cache entry.
@@ -57,13 +54,17 @@ func KeyContent(dataDir, productKey, href, lang string) string {
 	return filepath.Join(dataDir, "cache", "content", filepath.FromSlash(productKey), filepath.FromSlash(clean), lang+".json")
 }
 
-// Valid reports whether the cache file at path is present and within TTL.
-func Valid(path string) bool {
+// Valid reports whether the cache file at path is present and within ttl.
+// A ttl of 0 (or less) always reports the entry as stale, forcing a re-fetch.
+func Valid(path string, ttl time.Duration) bool {
+	if ttl <= 0 {
+		return false
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	return time.Since(info.ModTime()) < TTL
+	return time.Since(info.ModTime()) < ttl
 }
 
 // LoadJSON reads and JSON-decodes the cache file at path into v.

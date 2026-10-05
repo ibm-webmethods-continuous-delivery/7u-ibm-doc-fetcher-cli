@@ -42,7 +42,9 @@ IBM Docs Search API (1.www.s81c.com — no auth required).`,
 			debugDir = filepath.Join(cfg.DataDir, "debug")
 		}
 
-		client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, debugDir, logger)
+		requestLogPath := filepath.Join(cfg.DataDir, "requests.log")
+
+		client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, debugDir, requestLogPath, logger)
 
 		var allHits []ibmdocs.SearchHit
 		start := 0

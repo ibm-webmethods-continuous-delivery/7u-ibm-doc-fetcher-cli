@@ -56,10 +56,11 @@ type SearchResponse struct {
 
 // Client calls the IBM Docs CDN API.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	logger     *slog.Logger
-	debugDir   string // non-empty when --http-debug is active
+	baseURL        string
+	httpClient     *http.Client
+	logger         *slog.Logger
+	debugDir       string // non-empty when --http-debug is active
+	requestLogPath string // path to requests.log file; empty disables request logging
 }
 
 // New creates a Client.
@@ -67,16 +68,18 @@ type Client struct {
 //   - baseURL: CDN base, e.g. "https://1.www.s81c.com"
 //   - timeout: per-request timeout
 //   - debugDir: directory for HTTP debug dumps; empty string disables dumps
+//   - requestLogPath: path to requests.log file; empty string disables request logging
 //   - logger: structured logger (pass slog.Default() if none)
-func New(baseURL string, timeout time.Duration, debugDir string, logger *slog.Logger) *Client {
+func New(baseURL string, timeout time.Duration, debugDir string, requestLogPath string, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{Timeout: timeout},
-		logger:     logger,
-		debugDir:   debugDir,
+		baseURL:        strings.TrimRight(baseURL, "/"),
+		httpClient:     &http.Client{Timeout: timeout},
+		logger:         logger,
+		debugDir:       debugDir,
+		requestLogPath: requestLogPath,
 	}
 }
 
@@ -88,10 +91,15 @@ func userAgent() string {
 	return "Mozilla/5.0 (compatible; ibmdocs/" + ToolVersion + ")"
 }
 
-func (c *Client) do(req *http.Request) (*http.Response, error) {
+func (c *Client) do(req *http.Request, command, productKey, topicHref string) (*http.Response, error) {
 	req.Header.Set("User-Agent", userAgent())
 	req.Header.Set("Referer", "https://www.ibm.com/docs/")
 	req.Header.Set("Accept", "*/*")
+
+	// Log the request URL to requests.log before sending
+	if c.requestLogPath != "" {
+		c.logRequest(req, command, productKey, topicHref)
+	}
 
 	if c.debugDir != "" {
 		dumpRequest(c.debugDir, req)
@@ -109,6 +117,44 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// logRequest writes a JSON Lines entry to the request log file.
+func (c *Client) logRequest(req *http.Request, command, productKey, topicHref string) {
+	entry := map[string]string{
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
+		"method":      req.Method,
+		"url":         req.URL.String(),
+		"command":     command,
+		"product_key": productKey,
+	}
+	if topicHref != "" {
+		entry["topic_href"] = topicHref
+	}
+
+	data, err := json.Marshal(entry)
+	if err != nil {
+		c.logger.Warn("failed to marshal request log entry", "err", err)
+		return
+	}
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(c.requestLogPath), 0o755); err != nil {
+		c.logger.Warn("failed to create request log directory", "err", err)
+		return
+	}
+
+	// Append to log file (opened with O_APPEND | O_CREATE | O_WRONLY)
+	f, err := os.OpenFile(c.requestLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		c.logger.Warn("failed to open request log file", "err", err)
+		return
+	}
+	defer f.Close() //nolint:errcheck
+
+	if _, err := f.WriteString(string(data) + "\n"); err != nil {
+		c.logger.Warn("failed to write request log entry", "err", err)
+	}
+}
+
 // FetchTOC fetches the product Table of Contents.
 func (c *Client) FetchTOC(productKey, lang string) (*TOCResponse, error) {
 	// Product key contains slashes that must be preserved as path separators.
@@ -122,11 +168,11 @@ func (c *Client) FetchTOC(productKey, lang string) (*TOCResponse, error) {
 	}
 
 	c.logger.Debug("fetching TOC", "product", productKey, "lang", lang)
-	resp, err := c.do(req)
+	resp, err := c.do(req, "fetch", productKey, "")
 	if err != nil {
 		return nil, fmt.Errorf("FetchTOC %s: %w", productKey, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response already consumed/discarded below
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &APIError{URL: rawURL, StatusCode: resp.StatusCode}
@@ -172,11 +218,11 @@ func (c *Client) FetchContent(href, lang string) (string, error) {
 	}
 
 	c.logger.Debug("fetching content", "href", href, "lang", lang)
-	resp, err := c.do(req)
+	resp, err := c.do(req, "fetch", "", href)
 	if err != nil {
 		return "", fmt.Errorf("FetchContent %s: %w", href, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response already consumed/discarded below
 
 	if resp.StatusCode != http.StatusOK {
 		return "", &APIError{URL: rawURL, StatusCode: resp.StatusCode}
@@ -205,11 +251,11 @@ func (c *Client) Search(query, lang string, limit, start int) (*SearchResponse, 
 	}
 
 	c.logger.Debug("search", "query", query, "lang", lang, "limit", limit, "start", start)
-	resp, err := c.do(req)
+	resp, err := c.do(req, "search", "", "")
 	if err != nil {
 		return nil, fmt.Errorf("Search %q: %w", query, err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response already consumed/discarded below
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &APIError{URL: rawURL, StatusCode: resp.StatusCode}

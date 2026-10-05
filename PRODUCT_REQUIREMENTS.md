@@ -82,11 +82,13 @@ The CLI MUST accept a `--data` flag (or `-d` shorthand) pointing to a local dire
   debug/          # HTTP traffic dumps (written only when --http-debug is active)
     <YYYYMMDD-HHMMSS>-<method>-<sanitised-url>.req.txt
     <YYYYMMDD-HHMMSS>-<method>-<sanitised-url>.res.txt
+  requests.log    # Append-only JSON Lines log of every outbound HTTP request URL
 ```
 
 - If `--data` is not supplied, the tool MUST default to `./ibmdocs-data` in the current working directory and create it if it does not exist.
-- The `cache/` and `kb/` subdirectories are created automatically on first use.
+- The `cache/`, `kb/`, and `debug/` subdirectories are created automatically on first use.
 - The data folder is designed to be committed to version control if desired (JSON + Markdown, no binary blobs).
+- The `requests.log` file is **NOT** committed to git by default (add `<data>/requests.log` to `.gitignore` in project scaffolding).
 
 ---
 
@@ -106,7 +108,7 @@ ibmdocs [global flags] <command> [flags] [args]
 | `--lang` | `en` | Language code for IBM Docs API requests (see §17 for supported values) |
 | `--verbose`, `-v` | false | Enable debug-level logging to stderr |
 | `--no-color` | false | Disable ANSI colour in terminal output |
-| `--http-debug` | false | Dump every HTTP request and response to `<data>/debug/` (see §16) |
+| `--http-debug` | false | Dump every HTTP request and response to `<data>/debug/` (see §18) |
 
 ---
 
@@ -422,7 +424,7 @@ Verified via standard crawling-policy discovery mechanisms:
 | `www.ibm.com/robots.txt` | `Disallow: /docs/api` — explicitly disallows the browser-proxy host; irrelevant to our CDN-direct approach |
 | Response `X-Robots-Tag` header | Not present on any CDN response |
 | Response rate-limit headers (`X-RateLimit-*`, `Retry-After`) | Not present — no declared throttle |
-| `cache-control` on CDN responses | `max-age=3600` — IBM caches responses for 1 hour, consistent with our 24h TTL |
+| `cache-control` on CDN responses | `max-age=3600` — IBM caches responses for 1 hour; our default local cache TTL is much longer (30 days) since published docs change infrequently — override with `--cache-ttl` or `--refresh` when fresher content is needed |
 | `ETag` / `Last-Modified` | Present on all responses — enables conditional `GET` optimisation (post-v0.1) |
 | CORS | `access-control-allow-origin: https://www.ibm.com` — browser-only restriction; irrelevant to a CLI |
 
@@ -473,7 +475,7 @@ The `User-Agent` header should identify the tool by name and version (not impers
 |---|---|---|---|
 | `MAX_TOPICS_PER_LEVEL` | `10` | `--max-topics` | Maximum child topics followed per TOC node during recursion; `0` = unlimited |
 | `DEFAULT_DEPTH` | `3` | `--depth` / `-D` | Default recursion depth for `fetch --recursive` and `fetch-file` |
-| `CACHE_TTL_HOURS` | `24` | — | Hours before a cached entry is considered stale (for `--refresh` bypass) |
+| `CACHE_TTL` | `720h` (30 days) | `--cache-ttl` (env `IBMDOCS_CACHE_TTL`) | Duration before a cached entry is considered stale and a plain fetch re-hits the network; `--refresh` bypasses it unconditionally, `0` always treats the cache as stale |
 | `MIN_CONTENT_CHARS` | `350` | — | Below this character count (after stripping metadata), a topic is a stub |
 | `REQUEST_TIMEOUT_S` | `15` | — | HTTP request timeout in seconds |
 | `REQUEST_DELAY_MS` | `200` | `--delay` | Milliseconds to wait between sequential HTTP requests (polite crawling) |
@@ -554,10 +556,10 @@ Both patterns MUST be handled. The HTML-to-Markdown library receives the raw res
 ## 11. Caching Behaviour
 
 - Cache entries are keyed by `{type}:{product_key}/{topic_filename}:{lang}` matching the spike's path layout.
-- A cache entry is considered **valid** if its file modification time is within `CACHE_TTL_HOURS`.
-- `--refresh` bypasses the TTL check and forces a network fetch; the old cache file is overwritten.
+- A cache entry is considered **valid** if its file modification time is within `--cache-ttl` (default `720h` / 30 days, env `IBMDOCS_CACHE_TTL`).
+- `--refresh` bypasses the TTL check unconditionally and forces a network fetch; the old cache file is overwritten. A per-invocation `--cache-ttl 0` has the same stale-everything effect while still going through the normal TTL code path.
 - Cache files are written atomically (temp file + rename) to avoid corrupt partial writes.
-- The `refresh` command uses `index.json` timestamps (not file mtime) as the age source for user-visible staleness, keeping the behaviour consistent across filesystem copy/move.
+- The `refresh` command uses `index.json` timestamps (not file mtime) as the age source for user-visible staleness via `--older-than`; this is independent of, and may disagree with, the per-file `--cache-ttl` check used by `fetch`/`fetch-file`.
 
 **Cache key safety with `?cp=` cross-version hrefs:** TOC `href` values for content sourced from an older product version carry a `?cp=SSW0JQG_3.0.x` suffix (e.g. `SSW0JQG_2.x/architecture/user-metrics.html?cp=SSW0JQG_3.0.x`). This was confirmed by inspecting live TOC responses — every product with multiple active versions exhibits this pattern. The cache key derivation MUST strip the `?cp=...` query parameter from the href before constructing the filesystem path, otherwise the same topic fetched at different times (once via v2.x entry, once via v3.x entry) would create two separate cache files. The `topic_filename` used in the cache key is the basename of the path component only, with the extension and any query string removed.
 
@@ -625,6 +627,34 @@ Measured against the `urls-to-fetch-from-ibm-docs.txt` manifest (21 IBM Docs URL
 - `--verbose` enables `DEBUG` level (TOC walk steps, slug matching decisions, cache key derivation). HTTP bodies are NOT logged at DEBUG level — use `--http-debug` for full HTTP traffic.
 - No third-party logging library required; `log/slog` (stdlib since Go 1.21) is sufficient.
 
+### 15.1 HTTP Request Log (URL Only)
+
+In addition to structured logging to stderr, the tool MUST maintain a persistent **request log file** in the data folder that records every outbound HTTP request made to the IBM Docs CDN API.
+
+**File location:** `<data>/requests.log`
+
+**Format:** One line per request, append-only, JSON Lines (each line is a valid JSON object):
+
+```json
+{"timestamp":"2026-01-15T14:32:01Z","method":"GET","url":"https://1.www.s81c.com/docs/api/v1/toc/wm-integration-ipaas?lang=en","command":"fetch","product_key":"wm-integration-ipaas"}
+{"timestamp":"2026-01-15T14:32:02Z","method":"GET","url":"https://1.www.s81c.com/docs/api/v1/content/SSZMH3N_1.0.325/src/pages/ecosystem/action-ansible/index.html?cp=SSZMH3N_3.0.x\u0026parsebody=true\u0026lang=en","command":"fetch","product_key":"wm-integration-ipaas","topic_href":"SSZMH3N_1.0.325/src/pages/ecosystem/action-ansible/index.html?cp=SSZMH3N_3.0.x"}
+```
+
+**Fields:**
+- `timestamp`: RFC 3339 UTC timestamp of when the request was initiated
+- `method`: HTTP method (always `GET` for current endpoints)
+- `url`: Full request URL including all query parameters
+- `command`: CLI subcommand that triggered the request (`fetch`, `fetch-file`, `search`, `refresh`)
+- `product_key`: Product key derived from the request (empty for search)
+- `topic_href`: Content API href parameter (only for Content endpoint requests)
+
+**Constraints:**
+- The log file is **append-only** — never rotated or truncated by the tool.
+- Written synchronously before the HTTP request is sent (so a crash does not lose the log entry).
+- If the file cannot be written (permission error, disk full), the request proceeds but a WARNING is logged to stderr.
+- `--http-debug` is independent — it dumps full request/response bodies to `debug/`; this log records only the URL and metadata for audit/traceability.
+- The log file is NOT committed to git by default (add `<data>/requests.log` to `.gitignore` in project scaffolding).
+
 ---
 
 ## 16. Open Questions / Deferred Items
@@ -648,6 +678,43 @@ Measured against the `urls-to-fetch-from-ibm-docs.txt` manifest (21 IBM Docs URL
 | 15 | INDEX.md topic names contain `?cp=SSW0JQG_3.0.x` suffixes leaked from cache keys — cosmetic but should be stripped for readability | ⏳ v0.1 fix |
 | 16 | Root URL with no `?topic=` slug returns empty body from Content API; fallback to first non-dummy child required | ✅ Resolved — specified in §11 |
 | 17 | Empty-href TOC nodes (`"href": ""`) cause 400 on Content API; must skip before fetching | ✅ Resolved — specified in §11 |
+
+---
+
+## 17. Agent Integration (Skill Requirements)
+
+The `ibmdocs` tool is designed to be invoked by AI agents (e.g., IBM Bob, Cursor, GitHub Copilot, local LLMs with tool use) as a deterministic documentation retrieval primitive. The tool itself has no agent-specific code, but the **skill definition** that guides agent behaviour must satisfy the following requirements:
+
+### 17.1 Clickable Site URLs in KB Output
+
+The Markdown files written to `kb/` contain internal links that were present in the original IBM Docs HTML. These links currently point to the browser format (`https://www.ibm.com/docs/{lang}/{product_key}?topic={slug}`) or to CDN API URLs.
+
+**Requirement:** When the agent cites KB content in its answers, it MUST provide user-clickable links that point to the **IBM Docs browser site** (`www.ibm.com/docs/...`), not the CDN API (`1.www.s81c.com/...`). The browser URLs are human-navigable; the CDN API URLs are not.
+
+The skill MUST instruct the agent to:
+1. Derive browser URLs from the KB frontmatter (`product` + `topic`) and the known URL pattern: `https://www.ibm.com/docs/{lang}/{product_key}?topic={topic_slug}`.
+2. Use the `lang` from the KB file name (e.g., `en.md` → `en`).
+3. Present these as Markdown links `[title](url)` in answers so users can click to verify or explore.
+
+### 17.2 Agent-Agnostic Skill Definition
+
+The skill definition (`util/skills/ibmdocs/SKILL.md`) MUST be **agent-agnostic**. It must not contain references to any specific agent platform (e.g., "Bob", "IBM Bob", "Bob capabilities", "Bob mode", "Bob's terminal"). Instead:
+
+- Refer to "the agent" or "the AI assistant" generically.
+- Refer to "the terminal/shell capability available to the agent" for command execution.
+- Refer to "the file-reading capability available to the agent" for loading KB files.
+- The skill must be usable by any agent that can execute shell commands and read local files.
+
+### 17.3 Skill Steps Summary
+
+The skill MUST guide the agent through these steps:
+1. **Confirm binary availability** — run `ibmdocs version`, locate binary if not on PATH.
+2. **Identify product and topic** — from user request, determine IBM product and topic area.
+3. **Discover URL with `search`** — if no direct URL known, use `ibmdocs search` with `--latest-only`.
+4. **Fetch documentation** — use `ibmdocs fetch` with `--recursive --depth 2` (or `fetch-file` for batches).
+5. **Build KB** — run `ibmdocs build-kb` if not already done by fetch.
+6. **Locate and read KB files** — navigate `<data>/kb/INDEX.md` and read relevant `en.md` files.
+7. **Answer grounded in KB** — cite KB content, provide clickable browser URLs, suggest re-fetch if content missing.
 
 ---
 
@@ -699,11 +766,11 @@ Content-Length: 48291
 
 ---
 
-## 17. Language Support (`--lang`)
+## 19. Language Support (`--lang`)
 
 Validated by calling the TOC, Content, and Search APIs with seven different `lang` values against two products with different translation coverage (webMethods Integration — fully translated into multiple languages; Kubecost — English only).
 
-### 17.1 Behaviour by API
+### 19.1 Behaviour by API
 
 | API | Behaviour |
 |---|---|
@@ -711,11 +778,11 @@ Validated by calling the TOC, Content, and Search APIs with seven different `lan
 | **Content** | Returns fully translated HTML body when a translation exists. For IBM Integration SaaS: French body is ~11% larger than English (longer sentences); German similarly. Japanese and Chinese bodies are shorter (character density). For Kubecost: the CDN silently returns the English body for all non-`en` `lang` values — there is no error, just identical content. The only change is that internal `href` links within the body have their `/docs/en/` prefix replaced with `/docs/{lang}/`, even when the content itself is English. |
 | **Search** | Returns hits from the language-specific index. `lang=fr` returns 149 hits for "kubecost" vs 668 for `lang=en`; results include French-language topic titles (`Intégration avec IBM Kubecost`). The `--lang` flag on `search` narrows the result set to topics that have been translated into that language — this is intentional and useful. |
 
-### 17.2 Silent fallback behaviour
+### 19.2 Silent fallback behaviour
 
 **The CDN never returns an error for an unsupported language.** When a product has no translation for the requested `lang`, it silently returns the English content. This is consistent across all three APIs and all tested language codes. The tool MUST NOT special-case or validate the `--lang` value before sending — pass it through as-is and let the CDN respond. The user is responsible for knowing whether their target product has translations.
 
-### 17.3 Confirmed supported language codes
+### 19.3 Confirmed supported language codes
 
 Tested against `wm-integration-ipaas` (IBM-translated product):
 
@@ -731,14 +798,14 @@ Tested against `wm-integration-ipaas` (IBM-translated product):
 
 Kubecost returns English content silently for all non-`en` codes — no TOC label translation, no body translation. This is product-specific, not an API limitation.
 
-### 17.4 Link rewriting side-effect
+### 19.4 Link rewriting side-effect
 
 When `lang=fr` is passed, internal cross-reference `href` attributes within the returned HTML change from `/docs/en/...` to `/docs/fr/...` — **even when the body text is English**. The HTML-to-Markdown conversion MUST NOT attempt to normalise these link paths. They should be preserved as-is, since they are valid IBM Docs browser URLs that will serve the appropriate language version (or fall back to English) when a user clicks them.
 
-### 17.5 Cache key includes lang
+### 19.5 Cache key includes lang
 
 Cache entries are per-language: `content:{product_key}/{topic_filename}:{lang}`. Fetching the same topic in English and French produces two separate cache files (`en.json` and `fr.json`). This is correct and intentional.
 
-### 17.6 Performance note
+### 19.6 Performance note
 
 The `--lang` flag has no observable effect on CDN response latency. Translated and English responses are returned in equivalent time (~300–500ms per content request).

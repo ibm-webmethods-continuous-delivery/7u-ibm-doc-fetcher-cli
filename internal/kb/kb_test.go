@@ -54,11 +54,11 @@ This page describes the system architecture of Kubecost.
 
 func TestRenderFrontmatter(t *testing.T) {
 	fm := map[string]any{
-		"product":     "wm-integration-ipaas",
-		"topic":       "wmint_public_apis",
+		"product":      "wm-integration-ipaas",
+		"topic":        "wmint_public_apis",
 		"last_updated": "2024-11-01",
 		"http_methods": []string{"GET", "POST"},
-		"stub":        false,
+		"stub":         false,
 	}
 	out := RenderFrontmatter(fm)
 	if !strings.HasPrefix(out, "---\n") {
@@ -81,5 +81,71 @@ func TestEffectiveLen(t *testing.T) {
 	got := EffectiveLen(md)
 	if got != len("Short.") {
 		t.Errorf("EffectiveLen = %d, want %d", got, len("Short."))
+	}
+}
+
+func TestBrowserURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		productKey string
+		topicID    string
+		lang       string
+		want       string
+	}{
+		{
+			name:       "standard English",
+			productKey: "wm-integration-ipaas",
+			topicID:    "wmint_public_apis",
+			lang:       "en",
+			want:       "https://www.ibm.com/docs/en/wm-integration-ipaas?topic=wmint-public-apis",
+		},
+		{
+			name:       "French language",
+			productKey: "wm-integration-ipaas",
+			topicID:    "wmint_public_apis",
+			lang:       "fr",
+			want:       "https://www.ibm.com/docs/fr/wm-integration-ipaas?topic=wmint-public-apis",
+		},
+		{
+			name:       "multi-segment product key",
+			productKey: "integration-saas-lib/integration-saas/saas",
+			topicID:    "admin_console",
+			lang:       "en",
+			want:       "https://www.ibm.com/docs/en/integration-saas-lib/integration-saas/saas?topic=admin-console",
+		},
+		{
+			name:       "topic with multiple underscores",
+			productKey: "kubecost/self-hosted/3.x",
+			topicID:    "cost_allocation_reporting",
+			lang:       "ja",
+			want:       "https://www.ibm.com/docs/ja/kubecost/self-hosted/3.x?topic=cost-allocation-reporting",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BrowserURL(tt.productKey, tt.topicID, tt.lang)
+			if got != tt.want {
+				t.Errorf("BrowserURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBrowserURLFromFrontmatter(t *testing.T) {
+	fm := map[string]any{
+		"product": "wm-integration-ipaas",
+		"topic":   "wmint_public_apis",
+	}
+	got := BrowserURLFromFrontmatter(fm, "en")
+	want := "https://www.ibm.com/docs/en/wm-integration-ipaas?topic=wmint-public-apis"
+	if got != want {
+		t.Errorf("BrowserURLFromFrontmatter() = %q, want %q", got, want)
+	}
+	
+	// Test with missing frontmatter fields
+	emptyFM := map[string]any{}
+	got = BrowserURLFromFrontmatter(emptyFM, "en")
+	if got != "" {
+		t.Errorf("BrowserURLFromFrontmatter() with empty fm = %q, want empty string", got)
 	}
 }

@@ -12,11 +12,14 @@ import (
 	"time"
 
 	htmlmd "github.com/JohannesKaufmann/html-to-markdown/v2"
+
+	"github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli/internal/config"
 )
 
 // MinContentChars is the threshold below which a topic is considered a stub.
-// Matches config.MinContentChars but kept here to avoid circular imports.
-const MinContentChars = 350
+// Re-exported from config so there is a single source of truth; config does
+// not depend on kb, so this does not introduce an import cycle.
+const MinContentChars = config.MinContentChars
 
 // --------------------------------------------------------------------------
 // Regex patterns for frontmatter extraction (ported from spike)
@@ -31,16 +34,30 @@ var (
 
 	// Strips the lastModifiedDate line from Markdown output.
 	lastUpdatedLineRE = regexp.MustCompile(`\n?Last Updated:.*\n?`)
+
+	// stripNoise patterns (hoisted to avoid per-call recompilation).
+	noiseLastModRE    = regexp.MustCompile(`(?s)<div[^>]*id="lastModifiedDate"[^>]*>.*?</div>`)
+	noiseRelatedNavRE = regexp.MustCompile(`(?s)<nav[^>]*class="[^"]*(?:related-links|bottom-section-parent)[^"]*"[^>]*>.*?</nav>`)
+	noiseImgRE        = regexp.MustCompile(`(?i)<img[^>]*/?>|<img[^>]*>.*?</img>`)
+	noiseSpanPhRE     = regexp.MustCompile(`(?i)<span[^>]*class="ph"[^>]*>(.*?)</span>`)
+	noiseSpanInnerRE  = regexp.MustCompile(`(?i)<span[^>]*>(.*?)</span>`)
+
+	// lastModDateExtractRE extracts the date from the lastModifiedDate div before it is stripped.
+	lastModDateExtractRE = regexp.MustCompile(`id="lastModifiedDate"[^>]*>.*?Last Updated.*?([\d]{4}-[\d]{2}-[\d]{2})`)
+
+	// decodeIBMLinks patterns (hoisted to avoid per-call recompilation).
+	ibmLinkRE    = regexp.MustCompile(`href="https?://(?:www\.)?ibm\.com/links\?url=([^"]+)"`)
+	ibmLinkURLRE = regexp.MustCompile(`url=([^"]+)`)
 )
 
 // Topic holds the Markdown and metadata for one cached content entry.
 type Topic struct {
-	ProductKey string
-	TopicID    string // cache filename without extension, e.g. "wmint_public_apis"
-	Lang       string
-	Markdown   string // after HTML→MD conversion
+	ProductKey  string
+	TopicID     string // cache filename without extension, e.g. "wmint_public_apis"
+	Lang        string
+	Markdown    string // after HTML→MD conversion
 	Frontmatter map[string]any
-	IsStub     bool
+	IsStub      bool
 }
 
 // ConvertHTML converts a raw IBM Docs HTML fragment to Markdown.
@@ -52,7 +69,7 @@ func ConvertHTML(html string) (string, string, error) {
 
 	// Extract last-updated date from original HTML before stripping.
 	lastUpdated := ""
-	if m := regexp.MustCompile(`id="lastModifiedDate"[^>]*>.*?Last Updated.*?([\d]{4}-[\d]{2}-[\d]{2})`).FindStringSubmatch(html); len(m) > 1 {
+	if m := lastModDateExtractRE.FindStringSubmatch(html); len(m) > 1 {
 		lastUpdated = m[1]
 	}
 
@@ -259,14 +276,14 @@ func WriteTopLevelIndex(dataDir string, productTopicCounts map[string]int) error
 // stripNoise removes IBM Docs boilerplate HTML before conversion.
 func stripNoise(html string) string {
 	// Strip lastModifiedDate div.
-	html = regexp.MustCompile(`(?s)<div[^>]*id="lastModifiedDate"[^>]*>.*?</div>`).ReplaceAllString(html, "")
+	html = noiseLastModRE.ReplaceAllString(html, "")
 	// Strip related-links / bottom-section-parent nav blocks.
-	html = regexp.MustCompile(`(?s)<nav[^>]*class="[^"]*(?:related-links|bottom-section-parent)[^"]*"[^>]*>.*?</nav>`).ReplaceAllString(html, "")
+	html = noiseRelatedNavRE.ReplaceAllString(html, "")
 	// Strip img tags entirely.
-	html = regexp.MustCompile(`(?i)<img[^>]*/?>|<img[^>]*>.*?</img>`).ReplaceAllString(html, "")
+	html = noiseImgRE.ReplaceAllString(html, "")
 	// Unwrap <span class="ph"> product name placeholders — keep text.
-	html = regexp.MustCompile(`(?i)<span[^>]*class="ph"[^>]*>(.*?)</span>`).ReplaceAllStringFunc(html, func(m string) string {
-		inner := regexp.MustCompile(`(?i)<span[^>]*>(.*?)</span>`).FindStringSubmatch(m)
+	html = noiseSpanPhRE.ReplaceAllStringFunc(html, func(m string) string {
+		inner := noiseSpanInnerRE.FindStringSubmatch(m)
 		if len(inner) > 1 {
 			return inner[1]
 		}
@@ -277,19 +294,18 @@ func stripNoise(html string) string {
 
 // decodeIBMLinks replaces ibm.com/links?url=<encoded> with the decoded target URL.
 func decodeIBMLinks(html string) string {
-	return regexp.MustCompile(`href="https?://(?:www\.)?ibm\.com/links\?url=([^"]+)"`).
-		ReplaceAllStringFunc(html, func(m string) string {
-			sub := regexp.MustCompile(`url=([^"]+)`).FindStringSubmatch(m)
-			if len(sub) < 2 {
-				return m
-			}
-			decoded := strings.ReplaceAll(sub[1], "%3A", ":") // minimal decode for common case
-			decoded = strings.ReplaceAll(decoded, "%2F", "/")
-			decoded = strings.ReplaceAll(decoded, "%3F", "?")
-			decoded = strings.ReplaceAll(decoded, "%3D", "=")
-			decoded = strings.ReplaceAll(decoded, "%26", "&")
-			return `href="` + decoded + `"`
-		})
+	return ibmLinkRE.ReplaceAllStringFunc(html, func(m string) string {
+		sub := ibmLinkURLRE.FindStringSubmatch(m)
+		if len(sub) < 2 {
+			return m
+		}
+		decoded := strings.ReplaceAll(sub[1], "%3A", ":") // minimal decode for common case
+		decoded = strings.ReplaceAll(decoded, "%2F", "/")
+		decoded = strings.ReplaceAll(decoded, "%3F", "?")
+		decoded = strings.ReplaceAll(decoded, "%3D", "=")
+		decoded = strings.ReplaceAll(decoded, "%26", "&")
+		return `href="` + decoded + `"`
+	})
 }
 
 func uniqueStrings(ss []string) []string {
@@ -328,4 +344,28 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// BrowserURL constructs the IBM Docs browser URL for a topic.
+//
+// The browser URL pattern is: https://www.ibm.com/docs/{lang}/{product_key}?topic={topic_slug}
+//
+// The topic_slug is derived from the topic ID by replacing underscores with hyphens
+// (matching the behaviour in walker.go buildChildURL).
+func BrowserURL(productKey, topicID, lang string) string {
+	topicSlug := strings.ReplaceAll(topicID, "_", "-")
+	return fmt.Sprintf("https://www.ibm.com/docs/%s/%s?topic=%s", lang, productKey, topicSlug)
+}
+
+// BrowserURLFromFrontmatter constructs the IBM Docs browser URL from frontmatter data.
+//
+// Frontmatter must contain "product" and "topic" keys. The lang is derived from
+// the KB file name (e.g., "en.md" -> "en").
+func BrowserURLFromFrontmatter(fm map[string]any, lang string) string {
+	productKey, _ := fm["product"].(string)
+	topicID, _ := fm["topic"].(string)
+	if productKey == "" || topicID == "" {
+		return ""
+	}
+	return BrowserURL(productKey, topicID, lang)
 }

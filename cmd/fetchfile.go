@@ -75,7 +75,7 @@ func readManifest(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open manifest %s: %w", path, err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only handle; close error is not actionable
 
 	var urls []string
 	sc := bufio.NewScanner(f)

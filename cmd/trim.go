@@ -83,9 +83,9 @@ Trim order: stubs first, then oldest, then smallest substantive topics.`,
 		})
 
 		type removed struct {
-			Path    string `json:"path"`
-			Bytes   int64  `json:"bytes"`
-			IsStub  bool   `json:"stub"`
+			Path   string `json:"path"`
+			Bytes  int64  `json:"bytes"`
+			IsStub bool   `json:"stub"`
 		}
 		var removedFiles []removed
 		var totalSize int64
@@ -117,9 +117,9 @@ Trim order: stubs first, then oldest, then smallest substantive topics.`,
 
 		if trimFlags.jsonOutput {
 			return jsonEncode(map[string]any{
-				"removed": removedFiles,
+				"removed":     removedFiles,
 				"freed_bytes": freedBytes,
-				"dry_run": trimFlags.dryRun,
+				"dry_run":     trimFlags.dryRun,
 			})
 		}
 

@@ -30,17 +30,23 @@ type Walker struct {
 	lang      string
 	maxTopics int
 	delay     time.Duration
+	cacheTTL  time.Duration
 	refresh   bool
 	logger    *slog.Logger
 	visited   map[string]bool
 }
 
 // NewWalker creates a Walker.
+//
+//   - cacheTTL: how long a cached TOC/content entry stays valid before a
+//     plain (non --refresh) fetch re-hits the network; 0 forces every fetch
+//     to treat the cache as stale.
 func NewWalker(
 	client *ibmdocs.Client,
 	dataDir, lang string,
 	maxTopics int,
 	delay time.Duration,
+	cacheTTL time.Duration,
 	refresh bool,
 	logger *slog.Logger,
 ) *Walker {
@@ -53,6 +59,7 @@ func NewWalker(
 		lang:      lang,
 		maxTopics: maxTopics,
 		delay:     delay,
+		cacheTTL:  cacheTTL,
 		refresh:   refresh,
 		logger:    logger,
 		visited:   make(map[string]bool),
@@ -104,7 +111,7 @@ func (w *Walker) Fetch(rawURL string, maxDepth int) <-chan TopicResult {
 // fetchTOC retrieves the TOC from cache or network.
 func (w *Walker) fetchTOC(productKey string) (*ibmdocs.TOCResponse, error) {
 	cachePath := cache.KeyTOC(w.dataDir, productKey, w.lang)
-	if !w.refresh && cache.Valid(cachePath) {
+	if !w.refresh && cache.Valid(cachePath, w.cacheTTL) {
 		w.logger.Debug("TOC cache hit", "product", productKey)
 		var toc ibmdocs.TOCResponse
 		if err := cache.LoadJSON(cachePath, &toc); err == nil {
@@ -167,10 +174,6 @@ func (w *Walker) walk(
 	ch <- result
 
 	if result.Err == nil && depth < maxDepth {
-		// Apply inter-request delay before descending.
-		if w.delay > 0 {
-			time.Sleep(w.delay)
-		}
 		w.recurseChildren(node, nodeURL, productKey, depth, maxDepth, ch)
 	}
 }
@@ -189,9 +192,6 @@ func (w *Walker) recurseChildren(
 		child := &children[i]
 		childURL := buildChildURL(productKey, child.Href, w.lang)
 		w.walk(child, childURL, productKey, depth+1, maxDepth, ch)
-		if w.delay > 0 {
-			time.Sleep(w.delay)
-		}
 	}
 }
 
@@ -218,7 +218,7 @@ func (w *Walker) fetchContent(
 		HTML       string `json:"html"`
 	}
 
-	if !w.refresh && cache.Valid(cachePath) {
+	if !w.refresh && cache.Valid(cachePath, w.cacheTTL) {
 		var entry cacheEntry
 		if err := cache.LoadJSON(cachePath, &entry); err == nil {
 			w.logger.Debug("content cache hit", "href", href)
@@ -228,6 +228,10 @@ func (w *Walker) fetchContent(
 		}
 	}
 
+	// Apply inter-request delay only for actual network fetches, not cache hits.
+	if w.delay > 0 {
+		time.Sleep(w.delay)
+	}
 	w.logger.Info("fetching content", "href", href, "depth", depth)
 	html, err := w.client.FetchContent(href, w.lang)
 	if err != nil {

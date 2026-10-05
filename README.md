@@ -48,7 +48,7 @@ IBM Docs is a browser SPA backed by a clean REST API on `1.www.s81c.com`.
 2. Fetches the product Table of Contents (TOC) and resolves the slug to a content href.
 3. Fetches the HTML fragment for the topic and converts it to clean Markdown.
 4. Optionally recurses through child topics in the TOC up to a configurable depth.
-5. Caches everything locally (JSON, 24 h TTL) so re-runs are instant.
+5. Caches everything locally (JSON, 30-day TTL by default, configurable) so re-runs are instant.
 6. Exports the cache as agent-ready Markdown with YAML frontmatter under `kb/`.
 
 The Markdown output is designed to be fed directly to an LLM context window,
@@ -308,9 +308,9 @@ Cache is never touched — run `build-kb` at any time to restore the full KB.
 ibmdocs-data/
   cache/
     toc/
-      <product-key>/en.json          # TOC responses (24 h TTL)
+      <product-key>/en.json          # TOC responses (--cache-ttl, default 30 days)
     content/
-      <product-key>/<topic>/en.json  # Content responses (24 h TTL)
+      <product-key>/<topic>/en.json  # Content responses (--cache-ttl, default 30 days)
   kb/
     <product-key>/
       <topic>/en.md                  # Agent-ready Markdown + YAML frontmatter
@@ -334,6 +334,7 @@ only JSON and Markdown, no binary blobs.
 | `--lang` | `en` | Language code (e.g. `fr`, `de`, `ja`, `zh-cn`) |
 | `--verbose`, `-v` | false | Debug-level logging to stderr |
 | `--delay` | `200ms` | Inter-request delay (polite crawling; `0` to disable) |
+| `--cache-ttl` | `720h` (30 days) | How long a cached entry stays valid before a plain fetch re-hits the network (env: `IBMDOCS_CACHE_TTL`); `0` always treats the cache as stale, `--refresh` bypasses it unconditionally |
 | `--cdn-base-url` | `https://1.www.s81c.com` | CDN base URL (env: `IBMDOCS_CDN_BASE_URL`) |
 | `--http-debug` | false | Dump every HTTP request/response to `<data>/debug/` |
 
