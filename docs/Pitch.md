@@ -5,6 +5,26 @@
 Spending too much time with IBM docs?
 Try out the `ibmdocs` CLI tool and the associated AI Agent skill today. Have sophisticated answers in minutes using your agent of choice with no intermediaries whatsoever!
 
+https://ibm.biz/~X2AERyA53
+
+
+1. Download the [binary](https://github.com/ibm-webmethods-continuous-delivery/7u-ibm-doc-fetcher-cli/releases/latest)
+2. Download the [skill](https://github.com/ibm-webmethods-continuous-delivery/7u-ibm-doc-fetcher-cli/tree/main/util/skills/ibmdocs) and set up your agent to use it.
+3. Make a data folder to keep the local knowledge base (e.g. ~/ibmdocs-data)
+4. Ask the agent you question without being shy. E.g.
+
+> "Using the skill ibmdocs, the data folder ... and the binary ..., please ...
+
+> *"Explain Instana deployment architectures"*
+
+> *"How to approach CI/CD-style delivery with IBM Integration SaaS?"*
+
+> *"What are the authentication options for the webMethods Integration public APIs?"*
+
+> *"Compare IBM MQ and IBM Event Streams for a high-throughput event pipeline"*
+
+The agent fetches the relevant IBM Docs pages, builds a local knowledge base, and answers from IBM-published text — grounded, version-stamped, with clickable links back to the source.
+
 ---
 
 ## Part I — The Quick Case (for everyone)
