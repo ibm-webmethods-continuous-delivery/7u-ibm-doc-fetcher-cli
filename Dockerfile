@@ -1,7 +1,8 @@
 # Stage 1: build static binary
 FROM alpine:3 AS builder
 
-RUN apk add --no-cache go musl-dev git
+RUN apk upgrade --no-cache && \
+    apk add --no-cache go musl-dev git
 
 WORKDIR /build
 

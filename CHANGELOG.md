@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.5] - 2026-10-14
+
+### Security
+- **stdlib CVE remediation**: Bumped minimum Go toolchain to `1.26.9` in `go.mod` and added `apk upgrade --no-cache` before `apk add go` in the builder stage of `Dockerfile`. This ensures the Alpine package index provides Go ≥ 1.26.9, resolving all 13 stdlib CVEs reported by Trivy (3× HIGH, 5× MEDIUM, 1× LOW, 4× UNKNOWN) present in the v0.0.4 image which was built with Go 1.26.8.
+
+### Changed
+- `go.mod`: `go 1.26.0` → `go 1.26.9`
+- `Dockerfile`: builder `RUN apk add` now preceded by `apk upgrade --no-cache` to pull the latest patched Alpine packages at build time.
+
+---
+
 ## [v0.0.4] - 2026-10-14
 
 ### Added
