@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli/internal/cache"
+	"github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli/internal/ibmdocs"
 	"github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli/internal/kb"
 )
 
@@ -82,12 +83,7 @@ under kb/, applying YAML frontmatter and updating INDEX.md files. Idempotent.`,
 
 		written, skipped := 0, 0
 		for _, e := range entries {
-			type cacheEntry struct {
-				Href       string `json:"href"`
-				ProductKey string `json:"product_key"`
-				HTML       string `json:"html"`
-			}
-			var cached cacheEntry
+			var cached cache.ContentEntry
 			if err := cache.LoadJSON(e.cachePath, &cached); err != nil {
 				logger.Warn("cache load failed", "path", e.cachePath, "err", err)
 				skipped++
@@ -113,9 +109,7 @@ under kb/, applying YAML frontmatter and updating INDEX.md files. Idempotent.`,
 			if q := strings.Index(cleanHref, "?"); q >= 0 {
 				cleanHref = cleanHref[:q]
 			}
-			isStaticSpec := strings.HasSuffix(strings.ToLower(cleanHref), ".yaml") ||
-				strings.HasSuffix(strings.ToLower(cleanHref), ".yml") ||
-				strings.HasSuffix(strings.ToLower(cleanHref), ".json")
+			isStaticSpec := ibmdocs.IsStaticAsset(cleanHref)
 
 			if isStaticSpec {
 				content = cached.HTML
@@ -125,6 +119,7 @@ under kb/, applying YAML frontmatter and updating INDEX.md files. Idempotent.`,
 					"topic":   effectiveTopicID,
 					"spec":    true,
 				}
+				// Static assets have no browser page, hence no source_url.
 			} else {
 				var lastUpdated string
 				var err error
@@ -137,6 +132,9 @@ under kb/, applying YAML frontmatter and updating INDEX.md files. Idempotent.`,
 
 				isStub = kb.EffectiveLen(md) < kb.MinContentChars
 				fm = kb.ExtractFrontmatter(md, effectiveProductKey, effectiveTopicID, lastUpdated)
+				if cached.SourceURL != "" {
+					fm["source_url"] = cached.SourceURL
+				}
 				if isStub {
 					fm["stub"] = true
 				}

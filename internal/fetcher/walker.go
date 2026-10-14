@@ -18,6 +18,7 @@ type TopicResult struct {
 	Lang       string
 	Depth      int
 	HTML       string // raw HTML fragment from Content API
+	SourceURL  string // canonical ibm.com browser URL (resolved via Search API, memoized in cache); "" if unresolved
 	CacheFile  string // path written to cache
 	Cached     bool   // true if served from cache
 	Err        error
@@ -29,7 +30,6 @@ type Walker struct {
 	dataDir   string
 	lang      string
 	maxTopics int
-	delay     time.Duration
 	cacheTTL  time.Duration
 	refresh   bool
 	logger    *slog.Logger
@@ -45,7 +45,6 @@ func NewWalker(
 	client *ibmdocs.Client,
 	dataDir, lang string,
 	maxTopics int,
-	delay time.Duration,
 	cacheTTL time.Duration,
 	refresh bool,
 	logger *slog.Logger,
@@ -58,7 +57,6 @@ func NewWalker(
 		dataDir:   dataDir,
 		lang:      lang,
 		maxTopics: maxTopics,
-		delay:     delay,
 		cacheTTL:  cacheTTL,
 		refresh:   refresh,
 		logger:    logger,
@@ -93,7 +91,10 @@ func (w *Walker) Fetch(rawURL string, maxDepth int) <-chan TopicResult {
 		// Find starting node
 		var startNode *ibmdocs.TOCNode
 		if topicSlug != "" {
-			startNode = findInTOC(&toc.TOC, topicSlug)
+			startNode = w.findBySlugExact(&toc.TOC, topicSlug)
+			if startNode == nil {
+				startNode = findInTOC(&toc.TOC, topicSlug)
+			}
 			if startNode == nil {
 				w.logger.Warn("topic slug not found in TOC, falling back to TOC root",
 					"slug", topicSlug, "product", productKey)
@@ -106,6 +107,40 @@ func (w *Walker) Fetch(rawURL string, maxDepth int) <-chan TopicResult {
 		w.walk(startNode, rawURL, productKey, 0, maxDepth, ch)
 	}()
 	return ch
+}
+
+// findBySlugExact resolves a real ibm.com ?topic= slug to its TOC node via the
+// scoped Search API (exact slug match), avoiding the fuzzy matcher's false
+// positives. Returns nil when it cannot be resolved deterministically.
+func (w *Walker) findBySlugExact(root *ibmdocs.TOCNode, slug string) *ibmdocs.TOCNode {
+	first := firstContentChild(root)
+	if first == nil {
+		return nil
+	}
+	productID, _, ok := strings.Cut(first.Href, "/")
+	if !ok {
+		return nil
+	}
+	href, err := w.client.ResolveHrefBySlug(slug, w.lang, productID)
+	if err != nil {
+		w.logger.Debug("exact slug lookup failed, using fuzzy match", "slug", slug, "err", err)
+		return nil
+	}
+	if href == "" {
+		return nil
+	}
+	queue := []*ibmdocs.TOCNode{root}
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		if nh, _, _ := strings.Cut(n.Href, "?"); nh == href {
+			return n
+		}
+		for i := range n.Topics {
+			queue = append(queue, &n.Topics[i])
+		}
+	}
+	return nil
 }
 
 // fetchTOC retrieves the TOC from cache or network.
@@ -212,26 +247,26 @@ func (w *Walker) fetchContent(
 		CacheFile:  cachePath,
 	}
 
-	type cacheEntry struct {
-		Href       string `json:"href"`
-		ProductKey string `json:"product_key"`
-		HTML       string `json:"html"`
-	}
-
 	if !w.refresh && cache.Valid(cachePath, w.cacheTTL) {
-		var entry cacheEntry
+		var entry cache.ContentEntry
 		if err := cache.LoadJSON(cachePath, &entry); err == nil {
 			w.logger.Debug("content cache hit", "href", href)
 			base.HTML = entry.HTML
 			base.Cached = true
+			base.SourceURL = entry.SourceURL
+			if base.SourceURL == "" && !ibmdocs.IsStaticAsset(href) {
+				// Backfill entries cached before source_url existed.
+				if base.SourceURL = w.resolveSourceURL(href, node.Label); base.SourceURL != "" {
+					entry.SourceURL = base.SourceURL
+					if err := cache.SaveJSON(cachePath, entry); err != nil {
+						w.logger.Warn("content cache write failed", "err", err)
+					}
+				}
+			}
 			return base
 		}
 	}
 
-	// Apply inter-request delay only for actual network fetches, not cache hits.
-	if w.delay > 0 {
-		time.Sleep(w.delay)
-	}
 	w.logger.Info("fetching content", "href", href, "depth", depth)
 	html, err := w.client.FetchContent(href, w.lang)
 	if err != nil {
@@ -239,13 +274,32 @@ func (w *Walker) fetchContent(
 		return base
 	}
 
-	entry := cacheEntry{Href: href, ProductKey: productKey, HTML: html}
+	entry := cache.ContentEntry{Href: href, ProductKey: productKey, HTML: html}
+	if !ibmdocs.IsStaticAsset(href) {
+		entry.SourceURL = w.resolveSourceURL(href, node.Label)
+	}
 	if err := cache.SaveJSON(cachePath, entry); err != nil {
 		w.logger.Warn("content cache write failed", "err", err)
 	}
 
 	base.HTML = html
+	base.SourceURL = entry.SourceURL
 	return base
+}
+
+// resolveSourceURL looks up the canonical ibm.com URL for a TOC node. The
+// ?topic= slug cannot be derived from the href, so a failed lookup is logged
+// and yields "" rather than a guessed URL.
+func (w *Walker) resolveSourceURL(href, label string) string {
+	u, err := w.client.ResolveSourceURL(href, label, w.lang)
+	if err != nil {
+		w.logger.Warn("source_url lookup failed", "href", href, "err", err)
+		return ""
+	}
+	if u == "" {
+		w.logger.Warn("source_url not found in search index", "href", href, "label", label)
+	}
+	return u
 }
 
 // --------------------------------------------------------------------------
@@ -290,7 +344,11 @@ func firstContentChild(node *ibmdocs.TOCNode) *ibmdocs.TOCNode {
 	return nil
 }
 
-// buildChildURL constructs a browser URL for a child topic.
+// buildChildURL constructs a best-effort browser URL for a child topic.
+//
+// Deprecated for citation purposes: the slug is derived from the file name and
+// usually does NOT match IBM's real ?topic= slug. It is only used as the
+// TopicResult.URL label; the authoritative link is TopicResult.SourceURL.
 func buildChildURL(productKey, href, lang string) string {
 	// Extract slug from href basename (strip .html and ?cp=... )
 	clean := href

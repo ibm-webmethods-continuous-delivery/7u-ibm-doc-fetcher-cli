@@ -18,6 +18,17 @@ import (
 
 var cpParamRE = regexp.MustCompile(`\?cp=[^&]*(&.*)?$`)
 
+// ContentEntry is the on-disk shape of a cache/content JSON file.
+type ContentEntry struct {
+	Href       string `json:"href"`
+	ProductKey string `json:"product_key"`
+	// SourceURL is the canonical ibm.com browser URL, resolved once through
+	// the Search API (the ?topic= slug is not derivable from Href) and
+	// memoized here. Empty when unresolved or not applicable.
+	SourceURL string `json:"source_url,omitempty"`
+	HTML      string `json:"html"`
+}
+
 // KeyTOC returns the filesystem path for a TOC cache entry.
 //
 //	product key: "wm-integration-ipaas"  lang: "en"

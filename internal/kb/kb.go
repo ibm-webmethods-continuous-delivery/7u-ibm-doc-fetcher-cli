@@ -135,7 +135,7 @@ func ExtractFrontmatter(md, productKey, topicID, lastUpdated string) map[string]
 // the spike's output format exactly.
 func RenderFrontmatter(fm map[string]any) string {
 	// Canonical key order.
-	order := []string{"product", "topic", "last_updated", "http_methods", "api_paths", "auth", "requires_admin", "stub", "note"}
+	order := []string{"product", "topic", "source_url", "last_updated", "http_methods", "api_paths", "auth", "requires_admin", "stub", "note"}
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	for _, k := range order {
@@ -346,22 +346,27 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
-// BrowserURL constructs the IBM Docs browser URL for a topic.
+// BrowserURL constructs a GUESSED IBM Docs browser URL for a topic.
 //
-// The browser URL pattern is: https://www.ibm.com/docs/{lang}/{product_key}?topic={topic_slug}
-//
-// The topic_slug is derived from the topic ID by replacing underscores with hyphens
-// (matching the behaviour in walker.go buildChildURL).
+// Deprecated: the real ?topic= slug is NOT derivable from the topic ID (it is
+// built by IBM from the parent section and the title, e.g. topic ID
+// "configuring_sni" is really "cli-configuring-server-name-indication-sni").
+// URLs produced here usually redirect to the product root. Use the
+// "source_url" frontmatter field, which is resolved via the Search API and
+// memoized in the cache. Kept only for backward compatibility.
 func BrowserURL(productKey, topicID, lang string) string {
 	topicSlug := strings.ReplaceAll(topicID, "_", "-")
 	return fmt.Sprintf("https://www.ibm.com/docs/%s/%s?topic=%s", lang, productKey, topicSlug)
 }
 
-// BrowserURLFromFrontmatter constructs the IBM Docs browser URL from frontmatter data.
+// BrowserURLFromFrontmatter returns the IBM Docs browser URL from frontmatter data.
 //
-// Frontmatter must contain "product" and "topic" keys. The lang is derived from
-// the KB file name (e.g., "en.md" -> "en").
+// It prefers the memoized, search-verified "source_url" field. Only when that is
+// absent does it fall back to the deprecated guessed BrowserURL (which may be wrong).
 func BrowserURLFromFrontmatter(fm map[string]any, lang string) string {
+	if u, _ := fm["source_url"].(string); u != "" {
+		return u
+	}
 	productKey, _ := fm["product"].(string)
 	topicID, _ := fm["topic"].(string)
 	if productKey == "" || topicID == "" {

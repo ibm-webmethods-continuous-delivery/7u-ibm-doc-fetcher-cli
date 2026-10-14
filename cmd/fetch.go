@@ -67,8 +67,8 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 
 	requestLogPath := filepath.Join(cfg.DataDir, "requests.log")
 
-	client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, debugDir, requestLogPath, logger)
-	w := fetcher.NewWalker(client, cfg.DataDir, cfg.Lang, maxTopics, cfg.Delay, cfg.CacheTTL, refresh, logger)
+	client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, cfg.Delay, debugDir, requestLogPath, logger)
+	w := fetcher.NewWalker(client, cfg.DataDir, cfg.Lang, maxTopics, cfg.CacheTTL, refresh, logger)
 
 	maxDepth := 0
 	if recursive {
@@ -125,6 +125,9 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 					continue
 				}
 				fm := kb.ExtractFrontmatter(md, r.ProductKey, topicID, lastUpdated)
+				if r.SourceURL != "" {
+					fm["source_url"] = r.SourceURL
+				}
 				if kb.EffectiveLen(md) < config.MinContentChars {
 					fm["stub"] = true
 				}
@@ -138,6 +141,22 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 			if !recursive && !jsonOut && !quiet {
 				fmt.Println(md)
 			}
+		}
+	}
+
+	// Rate limiting must never be silent, even with --quiet or --json: a
+	// throttled request means data (a page, or just its source_url) is missing.
+	// Counted as a failure so the run is recorded as partial in index.json.
+	rlRetried, rlFailed := client.RateLimitStats()
+	if rlRetried > 0 || rlFailed > 0 {
+		fmt.Fprintf(os.Stderr,
+			"\n[RATE LIMIT] IBM Docs answered HTTP 429: %d request(s) retried with backoff, %d still throttled after retries.\n",
+			rlRetried, rlFailed)
+		if rlFailed > 0 {
+			fmt.Fprintln(os.Stderr,
+				"[RATE LIMIT] Some data is MISSING (pages and/or source_url). Wait a few minutes, then re-run the same command\n"+
+					"             (cached pages are reused; only the missing parts are fetched), optionally with a larger --delay (e.g. --delay 1s).")
+			failed++
 		}
 	}
 

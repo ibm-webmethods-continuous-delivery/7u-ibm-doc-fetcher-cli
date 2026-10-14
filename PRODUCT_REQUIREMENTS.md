@@ -71,7 +71,7 @@ The CLI MUST accept a `--data` flag (or `-d` shorthand) pointing to a local dire
 <data>/
   cache/          # Raw IBM Docs API responses (JSON), keyed by product + topic
     toc/          # TOC responses, one per product key
-    content/      # Content responses, one per topic href
+    content/      # Content responses ({href, product_key, source_url, html}), one per topic href
   kb/             # Agent-ready Markdown exports
     <product-key>/
       <topic>/
@@ -134,9 +134,11 @@ Fetches the IBM documentation topic identified by a standard IBM Docs browser UR
 
 **Behaviour with `--recursive`:** fetches the root topic, then walks the TOC tree depth-first up to `--depth` levels. At each level, at most `MAX_TOPICS_PER_LEVEL` children are followed (see §8.1).
 
+**Rate limiting behaviour:** when the CDN or Search API returns HTTP 429, the client retries with exponential backoff (up to 3 retries, respecting `Retry-After`). If requests remain throttled after retries, a `[RATE LIMIT]` notice is printed to stderr, the failed count increments, and the fetch status is marked as partial in `index.json`.
+
 **Exit codes:**
 - `0` — all requested topics fetched successfully
-- `1` — one or more topics failed; partial results may exist in cache
+- `1` — one or more topics failed (or throttled via 429); partial results may exist in cache
 - `2` — fatal error (URL parse failure, network unreachable, bad flags)
 
 ---
@@ -218,6 +220,7 @@ Transforms all entries in `cache/content/` into structured Markdown files under 
 ---
 product: "wm-integration-ipaas"
 topic: "wmint_public_apis"
+source_url: "https://www.ibm.com/docs/en/wm-integration-ipaas?topic=wmint-public-apis"
 last_updated: "2024-11-01"
 http_methods:
   - "GET"
@@ -423,18 +426,27 @@ Verified via standard crawling-policy discovery mechanisms:
 | `1.www.s81c.com/robots.txt` | `User-agent: * / Allow: /common/` — no Disallow rules; docs API paths unrestricted |
 | `www.ibm.com/robots.txt` | `Disallow: /docs/api` — explicitly disallows the browser-proxy host; irrelevant to our CDN-direct approach |
 | Response `X-Robots-Tag` header | Not present on any CDN response |
-| Response rate-limit headers (`X-RateLimit-*`, `Retry-After`) | Not present — no declared throttle |
+| Response rate-limit headers (`X-RateLimit-*`, `Retry-After`) | `HTTP 429 Too Many Requests` returned when burst thresholds are exceeded; `Retry-After` header honored when provided |
 | `cache-control` on CDN responses | `max-age=3600` — IBM caches responses for 1 hour; our default local cache TTL is much longer (30 days) since published docs change infrequently — override with `--cache-ttl` or `--refresh` when fresher content is needed |
 | `ETag` / `Last-Modified` | Present on all responses — enables conditional `GET` optimisation (post-v0.1) |
 | CORS | `access-control-allow-origin: https://www.ibm.com` — browser-only restriction; irrelevant to a CLI |
 
-**Polite crawling:** Although no rate limit is declared, the tool MUST implement a configurable inter-request delay to avoid hammering the CDN. This is good engineering practice regardless of policy and protects both IBM's infrastructure and the tool's continued access.
+**Polite crawling & Centralized Pacing:** The tool implements centralized inter-request delay pacing directly inside the HTTP client (`ibmdocs.Client.do`), ensuring all outbound requests (TOC, Content, Search, pagination loops) respect the rate ceiling uniformly without delaying local cache hits.
 
 | Constant | Default | Flag |
 |---|---|---|
 | `REQUEST_DELAY_MS` | `200` | `--delay` (milliseconds between sequential HTTP requests) |
 
-A delay of 200ms means a 16-topic fetch completes in ~3 seconds, which is imperceptible to a user and well within any reasonable rate limit.
+A delay of 200ms means a 16-topic fetch completes in ~3 seconds, which is imperceptible to a user and well within reasonable limits. For deep recursive walks or large batch manifests, larger delays (e.g. `--delay 1000` / `1s`) are recommended to avoid triggering rate limits.
+
+**Adaptive Rate Limiting & Backoff Policy (HTTP 429):**
+When IBM Docs answers with HTTP 429:
+1. **Adaptive Sticky Delay ("Ratchet" Effect):** Upon the first 429 response, the client immediately ratchets up its active inter-request delay for the entire session to $\max(\text{current\_delay} \times 2, 1000\text{ms})$. This prevents subsequent requests from immediately colliding with the edge rate limiter.
+2. **Automatic Retry with Backoff:** The HTTP client retries up to `MAX_RATE_LIMIT_RETRIES` (3) times per request. The wait duration uses the `Retry-After` header (seconds) when supplied by the server; otherwise, it applies exponential backoff starting at `DEFAULT_RETRY_BASE` (2s), doubling each attempt (`2s`, `4s`, `8s`), capped at `MAX_RETRY_WAIT` (30s).
+3. **Negative Caching & Static Asset Skipping:** Search misses during `source_url` or slug resolution are memoized in-memory during the crawl so duplicate unresolvable queries never trigger repeated network searches. Static assets (`.yaml`, `.yml`, `.json`, images, `.pdf`, `.zip`) skip search lookups entirely.
+4. **Rate Limit Tracking:** Atomic counters track retried requests and requests that remained failed/throttled after exhausting all retries.
+5. **Unsuppressed Diagnostic Alerting:** A `[RATE LIMIT]` banner is emitted to stderr (even under `--quiet` or `--json`) summarizing retried and still-throttled counts.
+6. **Partial Failure & Remediation:** If any request remains throttled after retries, the operation is flagged as a partial failure (exit code 1), missing items are logged, and operators/agents are advised to wait a few minutes before re-running with a larger `--delay`.
 
 ### 7.4 Request Contract
 
@@ -479,6 +491,9 @@ The `User-Agent` header should identify the tool by name and version (not impers
 | `MIN_CONTENT_CHARS` | `350` | — | Below this character count (after stripping metadata), a topic is a stub |
 | `REQUEST_TIMEOUT_S` | `15` | — | HTTP request timeout in seconds |
 | `REQUEST_DELAY_MS` | `200` | `--delay` | Milliseconds to wait between sequential HTTP requests (polite crawling) |
+| `MAX_RATE_LIMIT_RETRIES` | `3` | — | Maximum retries when encountering HTTP 429 |
+| `DEFAULT_RETRY_BASE` | `2s` | — | Initial exponential backoff base for HTTP 429 retries |
+| `MAX_RETRY_WAIT` | `30s` | — | Maximum duration cap for any individual HTTP 429 retry backoff |
 | `DEFAULT_LANG` | `en` | `--lang` | Default language for IBM Docs API |
 | `CDN_BASE_URL` | `https://1.www.s81c.com` | `--cdn-base-url` / `IBMDOCS_CDN_BASE_URL` | Base URL for all IBM Docs CDN API requests |
 
@@ -655,6 +670,14 @@ In addition to structured logging to stderr, the tool MUST maintain a persistent
 - `--http-debug` is independent — it dumps full request/response bodies to `debug/`; this log records only the URL and metadata for audit/traceability.
 - The log file is NOT committed to git by default (add `<data>/requests.log` to `.gitignore` in project scaffolding).
 
+### 15.2 Rate Limit Diagnostic Output
+
+Whenever HTTP 429 responses are encountered during execution:
+- The tool writes a structured `[RATE LIMIT]` block to **stderr** upon command completion (or in search deferred cleanup).
+- Output is emitted regardless of `--quiet` or `--json` flags because rate limiting indicates potential missing data.
+- The message explicitly reports the count of retried requests and permanently throttled requests.
+- When requests remain throttled, clear guidance is given: wait a few minutes, re-run the exact command (to fetch only the un-cached parts), and increase `--delay`.
+
 ---
 
 ## 16. Open Questions / Deferred Items
@@ -691,9 +714,18 @@ The Markdown files written to `kb/` contain internal links that were present in 
 
 **Requirement:** When the agent cites KB content in its answers, it MUST provide user-clickable links that point to the **IBM Docs browser site** (`www.ibm.com/docs/...`), not the CDN API (`1.www.s81c.com/...`). The browser URLs are human-navigable; the CDN API URLs are not.
 
+**The `?topic=` slug is NOT derivable.** IBM builds it from the parent section plus the title (e.g. TOC href `…/configuring_sni.html` → `?topic=cli-configuring-server-name-indication-sni`, not `configuring-sni`). A guessed slug does not return 404; it silently redirects (HTTP 302) to the product root. The earlier requirement to derive it from `product` + `topic` was therefore incorrect and has been removed.
+
+**Deterministic mechanism (`source_url`):**
+1. When a topic is fetched, the tool resolves its canonical URL through the Search API scoped to the IBM-internal product ID (`&products=<first href segment>`, e.g. `SSGOVO`), searching on the TOC label and accepting **only** the hit whose `href` equals the topic's href exactly (no fuzzy matching, no guessing). On a miss the field stays empty and a warning is logged.
+2. The result is memoized in the cache entry (`cache/content/.../<lang>.json`, field `source_url`). Cache hits lacking it are back-filled once. `build-kb` is offline and only copies the memoized value.
+3. `source_url` is written to the KB frontmatter (after `topic`). Static assets (`.yaml`/`.yml`/`.json`) have none.
+4. Conversely, when a fetch URL carries a real slug, it is mapped to the TOC node by exact slug match on the scoped search results before falling back to the legacy fuzzy matcher.
+5. `kb.BrowserURL` (guessing) is deprecated; `BrowserURLFromFrontmatter` returns `source_url` when present.
+
 The skill MUST instruct the agent to:
-1. Derive browser URLs from the KB frontmatter (`product` + `topic`) and the known URL pattern: `https://www.ibm.com/docs/{lang}/{product_key}?topic={topic_slug}`.
-2. Use the `lang` from the KB file name (e.g., `en.md` → `en`).
+1. Use the `source_url` frontmatter field verbatim as the link target, and NEVER construct a `?topic=` slug by hand.
+2. If `source_url` is absent, refresh the fetch and rebuild the KB; if still absent, cite the product root and state the deep link is unverified.
 3. Present these as Markdown links `[title](url)` in answers so users can click to verify or explore.
 
 ### 17.2 Agent-Agnostic Skill Definition
@@ -711,10 +743,23 @@ The skill MUST guide the agent through these steps:
 1. **Confirm binary availability** — run `ibmdocs version`, locate binary if not on PATH.
 2. **Identify product and topic** — from user request, determine IBM product and topic area.
 3. **Discover URL with `search`** — if no direct URL known, use `ibmdocs search` with `--latest-only`.
-4. **Fetch documentation** — use `ibmdocs fetch` with `--recursive --depth 2` (or `fetch-file` for batches).
-5. **Build KB** — run `ibmdocs build-kb` if not already done by fetch.
-6. **Locate and read KB files** — navigate `<data>/kb/INDEX.md` and read relevant `en.md` files.
-7. **Answer grounded in KB** — cite KB content, provide clickable browser URLs, suggest re-fetch if content missing.
+4. **Fetch documentation** — use `ibmdocs fetch` with `--recursive --depth 2` (or `fetch-file` for batches). Check stderr for `[RATE LIMIT]` warnings.
+5. **Handle rate limiting if flagged** — if `[RATE LIMIT]` occurs, inform the user and pause/stop (see §17.4).
+6. **Build KB** — run `ibmdocs build-kb` if not already done by fetch.
+7. **Locate and read KB files** — navigate `<data>/kb/INDEX.md` and read relevant `en.md` files.
+8. **Answer grounded in KB** — cite KB content, use verified `source_url` browser links, and suggest re-fetch if content is missing.
+
+### 17.4 Agent Handling of Rate Limiting (HTTP 429)
+
+To ensure reliable operation and avoid abusing IBM infrastructure, the skill MUST instruct the AI agent to follow these strict rules when encountering rate limiting:
+
+1. **Mandatory User Notification:** If the CLI outputs `[RATE LIMIT]`, the agent MUST immediately notify the user. The agent must state the number of retried requests and whether any requests remained throttled after retries.
+2. **Stop and Request Interruption / Pause:** If any requests remained throttled ("still throttled" > 0), data is incomplete (pages or canonical `source_url` links are missing). The agent MUST NOT continue blindly with partial data, MUST NOT retry immediately in a loop, and MUST NOT assume success. Instead, the agent MUST stop execution and ask the user for interruption or taking a pause.
+3. **Actionable Remediation Guidance:** The agent MUST explain to the user:
+   - Wait a few minutes for CDN throttling windows to clear.
+   - Re-running the identical command is safe and fast because previously fetched pages are saved in cache (only missing pages and `source_url` entries will be fetched).
+   - Use a larger delay (e.g. `--delay 1s`) for broad or deep recursive crawls.
+4. **No Concurrent Fetches:** The agent MUST NEVER execute multiple `ibmdocs fetch` or `search` commands in parallel.
 
 ---
 

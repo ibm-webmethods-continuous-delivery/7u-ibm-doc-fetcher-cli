@@ -16,8 +16,24 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+)
+
+const (
+	// maxRateLimitRetries is how many times a request answered with HTTP 429
+	// is retried before giving up.
+	maxRateLimitRetries = 3
+	// defaultRetryBase is the first backoff step (doubles each retry) used
+	// when the server sends no Retry-After header.
+	defaultRetryBase = 2 * time.Second
+	// maxRetryWait caps any single wait, including a server Retry-After.
+	maxRetryWait = 30 * time.Second
+	// minRatchetDelay is the minimum inter-request delay applied when ratcheting up after a 429.
+	minRatchetDelay = 1000 * time.Millisecond
 )
 
 // TOCNode mirrors the IBM Docs TOC API shape.
@@ -36,6 +52,7 @@ type TOCResponse struct {
 type SearchHit struct {
 	Title             string          `json:"title"`
 	FullURL           string          `json:"fullurl"`
+	Href              string          `json:"href"`
 	Snippet           string          `json:"snippet"`
 	ProductBreadCrumb string          `json:"productBreadCrumb"`
 	ReadTime          json.RawMessage `json:"readTime"` // int or "" depending on topic
@@ -61,16 +78,40 @@ type Client struct {
 	logger         *slog.Logger
 	debugDir       string // non-empty when --http-debug is active
 	requestLogPath string // path to requests.log file; empty disables request logging
+
+	retryBase   time.Duration // first 429 backoff step
+	rateRetries atomic.Int64  // 429 responses that were retried
+	rateFailed  atomic.Int64  // requests that still got 429 after all retries
+
+	mu           sync.Mutex
+	delay        time.Duration   // base / ratcheted inter-request delay
+	lastRequest  time.Time       // timestamp when last request was dispatched
+	searchMisses map[string]bool // memoized search misses (negative cache)
+}
+
+// RateLimitStats reports how often IBM Docs answered HTTP 429 during this
+// client's lifetime: retried = 429s that were retried, failed = requests that
+// were still throttled after all retries (their data is missing).
+func (c *Client) RateLimitStats() (retried, failed int64) {
+	return c.rateRetries.Load(), c.rateFailed.Load()
+}
+
+// CurrentDelay returns the client's active inter-request delay.
+func (c *Client) CurrentDelay() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.delay
 }
 
 // New creates a Client.
 //
 //   - baseURL: CDN base, e.g. "https://1.www.s81c.com"
 //   - timeout: per-request timeout
+//   - delay: inter-request pacing delay (e.g. 200ms)
 //   - debugDir: directory for HTTP debug dumps; empty string disables dumps
 //   - requestLogPath: path to requests.log file; empty string disables request logging
 //   - logger: structured logger (pass slog.Default() if none)
-func New(baseURL string, timeout time.Duration, debugDir string, requestLogPath string, logger *slog.Logger) *Client {
+func New(baseURL string, timeout, delay time.Duration, debugDir, requestLogPath string, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -80,7 +121,68 @@ func New(baseURL string, timeout time.Duration, debugDir string, requestLogPath 
 		logger:         logger,
 		debugDir:       debugDir,
 		requestLogPath: requestLogPath,
+		retryBase:      defaultRetryBase,
+		delay:          delay,
+		searchMisses:   make(map[string]bool),
 	}
+}
+
+// pace enforces the centralized inter-request delay across all outbound calls.
+func (c *Client) pace() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.delay > 0 && !c.lastRequest.IsZero() {
+		elapsed := time.Since(c.lastRequest)
+		if elapsed < c.delay {
+			time.Sleep(c.delay - elapsed)
+		}
+	}
+	c.lastRequest = time.Now()
+}
+
+// ratchetDelay ratchets up the session's base inter-request delay upon HTTP 429.
+func (c *Client) ratchetDelay() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	newDelay := c.delay * 2
+	if newDelay < minRatchetDelay {
+		newDelay = minRatchetDelay
+	}
+	if newDelay > c.delay {
+		c.logger.Warn("IBM Docs rate limit (HTTP 429) — ratcheting up base inter-request delay",
+			"previous_delay", c.delay.String(),
+			"new_delay", newDelay.String())
+		c.delay = newDelay
+	}
+}
+
+func (c *Client) hasSearchMiss(key string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.searchMisses[key]
+}
+
+func (c *Client) markSearchMiss(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.searchMisses[key] = true
+}
+
+// retryWait returns how long to wait before retry number attempt (0-based):
+// the server's Retry-After (seconds) when present, else exponential backoff.
+func (c *Client) retryWait(resp *http.Response, attempt int) time.Duration {
+	wait := c.retryBase << attempt
+	if s := resp.Header.Get("Retry-After"); s != "" {
+		if secs, err := strconv.Atoi(strings.TrimSpace(s)); err == nil && secs >= 0 {
+			wait = time.Duration(secs) * time.Second
+		}
+	}
+	if wait > maxRetryWait {
+		wait = maxRetryWait
+	}
+	return wait
 }
 
 // userAgent returns the tool's User-Agent header value.
@@ -105,16 +207,35 @@ func (c *Client) do(req *http.Request, command, productKey, topicHref string) (*
 		dumpRequest(c.debugDir, req)
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	for attempt := 0; ; attempt++ {
+		c.pace()
 
-	if c.debugDir != "" {
-		dumpResponse(c.debugDir, req, resp)
-	}
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return nil, err
+		}
 
-	return resp, nil
+		if c.debugDir != "" {
+			dumpResponse(c.debugDir, req, resp)
+		}
+
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+		c.ratchetDelay()
+		if attempt >= maxRateLimitRetries {
+			c.rateFailed.Add(1)
+			c.logger.Error("IBM Docs rate limit (HTTP 429) persists after retries — data for this request is MISSING",
+				"url", req.URL.String(), "retries", maxRateLimitRetries)
+			return resp, nil // caller turns the 429 into an *APIError
+		}
+		wait := c.retryWait(resp, attempt)
+		_ = resp.Body.Close()
+		c.rateRetries.Add(1)
+		c.logger.Warn("IBM Docs rate limit (HTTP 429) — backing off",
+			"wait", wait.String(), "attempt", attempt+1, "of", maxRateLimitRetries)
+		time.Sleep(wait)
+	}
 }
 
 // logRequest writes a JSON Lines entry to the request log file.
@@ -235,8 +356,111 @@ func (c *Client) FetchContent(href, lang string) (string, error) {
 	return string(body), nil
 }
 
+// IsStaticAsset reports whether href is a spec, image, or binary asset rather than a doc page.
+func IsStaticAsset(href string) bool {
+	clean := strings.ToLower(href)
+	if idx := strings.Index(clean, "?"); idx >= 0 {
+		clean = clean[:idx]
+	}
+	for _, ext := range []string{".yaml", ".yml", ".json", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".pdf", ".zip"} {
+		if strings.HasSuffix(clean, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveHrefBySlug maps a real ibm.com ?topic= slug back to the TOC href it
+// belongs to. Deterministic: the scoped search is queried with the slug words
+// and only a hit whose own fullurl carries exactly that slug is accepted.
+// Returns "" when no hit matches.
+func (c *Client) ResolveHrefBySlug(slug, lang, productID string) (string, error) {
+	if slug == "" || productID == "" {
+		return "", nil
+	}
+	missKey := "slug:" + productID + ":" + slug + ":" + lang
+	if c.hasSearchMiss(missKey) {
+		return "", nil
+	}
+
+	query := strings.ReplaceAll(slug, "-", " ")
+	for start, page := 0, 0; page < 3; page++ {
+		resp, err := c.SearchInProduct(query, lang, productID, 50, start)
+		if err != nil {
+			return "", err
+		}
+		for _, h := range resp.Items {
+			u, perr := url.Parse(h.FullURL)
+			if perr == nil && u.Query().Get("topic") == slug {
+				href, _, _ := strings.Cut(h.Href, "?")
+				return href, nil
+			}
+		}
+		if resp.Next < 0 || resp.Next >= resp.Hits || len(resp.Items) == 0 {
+			break
+		}
+		start = resp.Next
+	}
+	c.markSearchMiss(missKey)
+	return "", nil
+}
+
 // Search executes a keyword search and returns one page of results.
 func (c *Client) Search(query, lang string, limit, start int) (*SearchResponse, error) {
+	return c.search(query, lang, "", limit, start)
+}
+
+// SearchInProduct is Search scoped to one IBM-internal product ID
+// (the first path segment of a TOC href, e.g. "SSGOVO" or "SSFQ7G1_12.1.0").
+func (c *Client) SearchInProduct(query, lang, productID string, limit, start int) (*SearchResponse, error) {
+	return c.search(query, lang, productID, limit, start)
+}
+
+// ResolveSourceURL returns the canonical ibm.com browser URL of the topic
+// identified by href. IBM's ?topic= slug is NOT derivable from the href, so
+// it is looked up deterministically: search the product scope for the topic
+// title and accept only the hit whose own href equals the requested one
+// (ignoring any ?cp= suffix). Returns "" when no hit matches exactly.
+func (c *Client) ResolveSourceURL(href, title, lang string) (string, error) {
+	if IsStaticAsset(href) {
+		return "", nil
+	}
+	clean := href
+	if i := strings.Index(clean, "?"); i >= 0 {
+		clean = clean[:i]
+	}
+	productID, _, ok := strings.Cut(clean, "/")
+	if !ok || productID == "" || title == "" {
+		return "", nil
+	}
+
+	missKey := "source_url:" + clean + ":" + lang
+	if c.hasSearchMiss(missKey) {
+		return "", nil
+	}
+
+	const pageSize = 50
+	for start, page := 0, 0; page < 3; page++ {
+		resp, err := c.SearchInProduct(title, lang, productID, pageSize, start)
+		if err != nil {
+			return "", err
+		}
+		for _, h := range resp.Items {
+			hh, _, _ := strings.Cut(h.Href, "?")
+			if hh == clean {
+				return h.FullURL, nil
+			}
+		}
+		if resp.Next < 0 || resp.Next >= resp.Hits || len(resp.Items) == 0 {
+			break
+		}
+		start = resp.Next
+	}
+	c.markSearchMiss(missKey)
+	return "", nil
+}
+
+func (c *Client) search(query, lang, productID string, limit, start int) (*SearchResponse, error) {
 	rawURL := fmt.Sprintf("%s/docs/api/v1/search?query=%s&lang=%s&limit=%d&start=%d",
 		c.baseURL,
 		url.QueryEscape(query),
@@ -244,6 +468,9 @@ func (c *Client) Search(query, lang string, limit, start int) (*SearchResponse, 
 		limit,
 		start,
 	)
+	if productID != "" {
+		rawURL += "&products=" + url.QueryEscape(productID)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -276,6 +503,9 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	msg := fmt.Sprintf("IBM Docs API returned HTTP %d for %s", e.StatusCode, e.URL)
+	if e.StatusCode == http.StatusTooManyRequests {
+		return msg + " — RATE LIMITED; wait a few minutes and re-run, or raise --delay (e.g. --delay 1s)"
+	}
 	if e.StatusCode != http.StatusNotFound {
 		msg += " — if this persists, check --cdn-base-url"
 	}

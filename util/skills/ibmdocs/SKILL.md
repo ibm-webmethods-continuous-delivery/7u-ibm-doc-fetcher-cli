@@ -85,6 +85,14 @@ ibmdocs fetch "<ibm-docs-url>" --recursive --depth 2 --data "<data-dir>"
 - Increase depth only if the first fetch clearly misses required sub-topics.
 - The fetch prints Markdown to stdout and writes cache + KB files under the data folder.
 - **CLI Execution Timeout**: Deep recursive walks on large document subtrees with default polite crawling delays (`200ms`) can take over 30 seconds. When running a recursive fetch, allow for a long-running command using the timeout mechanism supported by the agent.
+- **Rate limiting (HTTP 429)**: IBM Docs throttles bursts of requests, and every newly fetched page also
+  costs one search call (for `source_url`). The CLI retries a 429 up to 3 times with backoff (honouring
+  `Retry-After`) and prints a `[RATE LIMIT]` line on stderr, even with `--quiet`/`--json`. **If you see
+  `[RATE LIMIT]`, you MUST tell the user** how many requests were retried and — if "still throttled" is
+  non-zero — that some pages or `source_url` values are MISSING. Then stop hammering: wait a few minutes
+  and re-run the identical command (cached pages are reused, only the missing parts are fetched), with a
+  larger `--delay` (e.g. `--delay 1s`) for big walks. Never present a partially fetched KB as complete,
+  and do not launch several fetches in parallel.
 
 ### Multiple topics from a manifest file
 
@@ -139,12 +147,18 @@ the exact wording and structure IBM publishes.
 - Base every factual claim, configuration value, API path, or code snippet on the KB content just
   read — not on training-time assumptions.
 - **Provide user-clickable links to the IBM Docs browser site** (`www.ibm.com/docs/...`) so users can verify statements or explore details themselves. Do NOT use CDN API URLs (`1.www.s81c.com/...`) — they are not human-navigable.
-- To construct a browser URL from KB frontmatter:
-  - The frontmatter contains `product` (e.g., `wm-integration-ipaas`) and `topic` (e.g., `wmint_public_apis`) keys.
-  - The language code is derived from the KB file name (e.g., `en.md` → `en`, `fr.md` → `fr`).
-  - The browser URL pattern is: `https://www.ibm.com/docs/{lang}/{product_key}?topic={topic_slug}`
-  - The topic slug is the topic ID with underscores replaced by hyphens (e.g., `wmint_public_apis` → `wmint-public-apis`).
-  - Example: `[Public APIs](https://www.ibm.com/docs/en/wm-integration-ipaas?topic=wmint-public-apis)`
+- **Use the `source_url` frontmatter field verbatim as the link target.** Every KB page fetched by
+  this tool carries it (resolved once through the IBM Docs Search API and memoized in the cache),
+  e.g. `source_url: "https://www.ibm.com/docs/en/wm-integration-ipaas?topic=publishes-publishing-projects"`.
+  Example: `[Publishing projects](https://www.ibm.com/docs/en/wm-integration-ipaas?topic=publishes-publishing-projects)`
+- **NEVER construct a `?topic=` slug yourself** from the `topic` frontmatter value, the KB folder name
+  or the page title. IBM's slug is built from the parent section plus the title (the KB topic
+  `configuring_sni` is really `cli-configuring-server-name-indication-sni`), so a guessed slug
+  silently redirects to the product root instead of failing.
+- If a page has no `source_url` (older KB, or the lookup was unavailable), re-run the fetch with
+  `--refresh` (or `ibmdocs fetch "<url>"` once; cached pages are back-filled automatically) and
+  rebuild with `ibmdocs build-kb`. If it is still absent, cite the product root URL
+  `https://www.ibm.com/docs/{lang}/{product_key}` and state that the deep link is unverified.
 - If a topic is missing from the KB after fetching, tell the user and suggest a more specific URL
   or search term before proceeding.
 - Cached entries are reused for 30 days by default (`--cache-ttl`, env `IBMDOCS_CACHE_TTL`) — this

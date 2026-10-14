@@ -44,10 +44,17 @@ IBM Docs Search API (1.www.s81c.com — no auth required).`,
 
 		requestLogPath := filepath.Join(cfg.DataDir, "requests.log")
 
-		client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, debugDir, requestLogPath, logger)
+		client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, cfg.Delay, debugDir, requestLogPath, logger)
 
 		var allHits []ibmdocs.SearchHit
 		start := 0
+		defer func() {
+			if retried, failed := client.RateLimitStats(); retried > 0 || failed > 0 {
+				fmt.Fprintf(os.Stderr,
+					"[RATE LIMIT] IBM Docs answered HTTP 429: %d request(s) retried with backoff, %d still throttled — results may be incomplete.\n",
+					retried, failed)
+			}
+		}()
 		for {
 			resp, err := client.Search(query, cfg.Lang, searchFlags.limit, start)
 			if err != nil {

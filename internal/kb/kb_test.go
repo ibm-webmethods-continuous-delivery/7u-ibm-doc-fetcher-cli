@@ -131,6 +131,32 @@ func TestBrowserURL(t *testing.T) {
 	}
 }
 
+func TestRenderFrontmatterSourceURL(t *testing.T) {
+	fm := map[string]any{
+		"product":    "wm-integration-ipaas",
+		"topic":      "co_configuring_git_account",
+		"source_url": "https://www.ibm.com/docs/en/wm-integration-ipaas?topic=repositories-configuring-git-accounts",
+	}
+	got := RenderFrontmatter(fm)
+	want := "---\nproduct: \"wm-integration-ipaas\"\ntopic: \"co_configuring_git_account\"\n" +
+		"source_url: \"https://www.ibm.com/docs/en/wm-integration-ipaas?topic=repositories-configuring-git-accounts\"\n---\n\n"
+	if got != want {
+		t.Errorf("RenderFrontmatter() =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestBrowserURLFromFrontmatterPrefersSourceURL(t *testing.T) {
+	fm := map[string]any{
+		"product":    "p",
+		"topic":      "configuring_sni",
+		"source_url": "https://www.ibm.com/docs/en/p?topic=cli-configuring-server-name-indication-sni",
+	}
+	got := BrowserURLFromFrontmatter(fm, "en")
+	if got != fm["source_url"] {
+		t.Errorf("got %q, want the memoized source_url", got)
+	}
+}
+
 func TestBrowserURLFromFrontmatter(t *testing.T) {
 	fm := map[string]any{
 		"product": "wm-integration-ipaas",

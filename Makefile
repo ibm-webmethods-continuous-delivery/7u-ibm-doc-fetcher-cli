@@ -65,7 +65,7 @@ build-windows:
 	@echo "Built: $(BUILD_DIR)/$(BINARY)-windows-amd64.exe"
 
 ## build-all: build all five release targets + checksums
-build-all: build-linux-amd64 build-linux-arm64 build-darwin-arm64 build-darwin-amd64 build-windows
+build-all: deps build-linux-amd64 build-linux-arm64 build-darwin-arm64 build-darwin-amd64 build-windows
 	@echo "\nAll targets:"
 	@ls -lh $(BUILD_DIR)/$(BINARY)-*
 	@cd $(BUILD_DIR) && sha256sum $(BINARY)-* > checksums.txt
