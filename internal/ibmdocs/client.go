@@ -8,6 +8,8 @@
 package ibmdocs
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,21 +105,86 @@ func (c *Client) CurrentDelay() time.Duration {
 	return c.delay
 }
 
+// BuildTransport constructs an *http.Transport configured for the given proxy
+// URL and optional extra CA bundle.
+//
+//   - proxyURL: explicit proxy, e.g. "http://proxy.corp:3128". Empty means
+//     fall back to the standard HTTP_PROXY / HTTPS_PROXY environment variables.
+//   - tlsCABundle: path to a PEM file containing one or more extra CA
+//     certificates to append to the system pool. Needed when a TLS-inspecting
+//     proxy presents a certificate signed by a private CA that is not already
+//     in /etc/ssl/certs/. Pass "" to use only the system pool.
+//
+// Returns a transport with the requested settings, or an error if the proxy
+// URL cannot be parsed or the CA bundle cannot be read.
+func BuildTransport(proxyURL, tlsCABundle string) (*http.Transport, error) {
+	// Start from a clone of the default transport so we inherit all tuning
+	// (keep-alives, idle connections, etc.) rather than getting bare defaults.
+	t := http.DefaultTransport.(*http.Transport).Clone()
+
+	// ── Proxy ────────────────────────────────────────────────────────────────
+	if proxyURL != "" {
+		u, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("--proxy: invalid URL %q: %w", proxyURL, err)
+		}
+		t.Proxy = http.ProxyURL(u)
+	}
+	// When proxyURL is empty, t.Proxy stays as ProxyFromEnvironment (the
+	// default), so HTTP_PROXY / HTTPS_PROXY are honoured automatically.
+
+	// ── TLS CA bundle ────────────────────────────────────────────────────────
+	if tlsCABundle != "" {
+		pemData, err := os.ReadFile(tlsCABundle)
+		if err != nil {
+			return nil, fmt.Errorf("--tls-ca-bundle: cannot read %q: %w", tlsCABundle, err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil {
+			// SystemCertPool can fail on some platforms; start with an empty pool.
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pemData) {
+			return nil, fmt.Errorf("--tls-ca-bundle: %q contains no valid PEM certificates", tlsCABundle)
+		}
+		if t.TLSClientConfig == nil {
+			t.TLSClientConfig = &tls.Config{}
+		}
+		t.TLSClientConfig.RootCAs = pool
+	}
+
+	return t, nil
+}
+
+// ValidateTransportConfig parses the proxy URL and checks that the CA bundle
+// file exists and contains at least one certificate. It is called during
+// PersistentPreRunE so the user gets a clear error before any network activity.
+func ValidateTransportConfig(proxyURL, tlsCABundle string) error {
+	_, err := BuildTransport(proxyURL, tlsCABundle)
+	return err
+}
+
 // New creates a Client.
 //
 //   - baseURL: CDN base, e.g. "https://1.www.s81c.com"
 //   - timeout: per-request timeout
 //   - delay: inter-request pacing delay (e.g. 200ms)
+//   - transport: custom HTTP transport (nil → http.DefaultTransport).
+//     Build one with BuildTransport to configure a proxy and/or extra CA certs.
 //   - debugDir: directory for HTTP debug dumps; empty string disables dumps
 //   - requestLogPath: path to requests.log file; empty string disables request logging
 //   - logger: structured logger (pass slog.Default() if none)
-func New(baseURL string, timeout, delay time.Duration, debugDir, requestLogPath string, logger *slog.Logger) *Client {
+func New(baseURL string, timeout, delay time.Duration, transport http.RoundTripper, debugDir, requestLogPath string, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	hc := &http.Client{Timeout: timeout}
+	if transport != nil {
+		hc.Transport = transport
+	}
 	return &Client{
 		baseURL:        strings.TrimRight(baseURL, "/"),
-		httpClient:     &http.Client{Timeout: timeout},
+		httpClient:     hc,
 		logger:         logger,
 		debugDir:       debugDir,
 		requestLogPath: requestLogPath,

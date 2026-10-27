@@ -67,7 +67,11 @@ func runFetch(rawURL string, recursive bool, depth int, refresh, jsonOut, quiet 
 
 	requestLogPath := filepath.Join(cfg.DataDir, "requests.log")
 
-	client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, cfg.Delay, debugDir, requestLogPath, logger)
+	transport, err := ibmdocs.BuildTransport(cfg.ProxyURL, cfg.TLSCABundle)
+	if err != nil {
+		return err
+	}
+	client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, cfg.Delay, transport, debugDir, requestLogPath, logger)
 	w := fetcher.NewWalker(client, cfg.DataDir, cfg.Lang, maxTopics, cfg.CacheTTL, refresh, logger)
 
 	maxDepth := 0

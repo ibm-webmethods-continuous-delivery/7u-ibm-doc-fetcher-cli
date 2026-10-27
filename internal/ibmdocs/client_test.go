@@ -20,7 +20,7 @@ func fakeSearch(t *testing.T, pages []string, got *string) *Client {
 		calls++
 	}))
 	t.Cleanup(srv.Close)
-	return New(srv.URL, 5*time.Second, 0, "", "", nil)
+	return New(srv.URL, 5*time.Second, 0, nil, "", "", nil)
 }
 
 func TestResolveSourceURL_ExactHrefMatch(t *testing.T) {
@@ -72,7 +72,7 @@ func TestResolveSourceURL_Pagination(t *testing.T) {
 }
 
 func TestResolveSourceURL_Unresolvable(t *testing.T) {
-	c := New("http://127.0.0.1:1", time.Second, 0, "", "", nil) // must not be contacted
+	c := New("http://127.0.0.1:1", time.Second, 0, nil, "", "", nil) // must not be contacted
 	for _, tc := range []struct{ href, title string }{
 		{"no-slash.html", "T"},
 		{"P/a.html", ""},
@@ -131,7 +131,7 @@ func TestDo_RetriesOn429ThenSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"hits":0,"next":-1,"topics":[]}`))
 	}))
 	defer srv.Close()
-	c := New(srv.URL, 5*time.Second, 0, "", "", nil)
+	c := New(srv.URL, 5*time.Second, 0, nil, "", "", nil)
 	c.retryBase = time.Millisecond
 
 	if _, err := c.Search("q", "en", 10, 0); err != nil {
@@ -149,7 +149,7 @@ func TestDo_PersistentRateLimitIsReported(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	c := New(srv.URL, 5*time.Second, 0, "", "", nil)
+	c := New(srv.URL, 5*time.Second, 0, nil, "", "", nil)
 	c.retryBase = time.Millisecond
 
 	_, err := c.Search("q", "en", 10, 0)
@@ -179,7 +179,7 @@ func TestClient_PacingAndRatchet(t *testing.T) {
 	defer srv.Close()
 
 	initialDelay := 10 * time.Millisecond
-	c := New(srv.URL, 5*time.Second, initialDelay, "", "", nil)
+	c := New(srv.URL, 5*time.Second, initialDelay, nil, "", "", nil)
 	c.retryBase = time.Millisecond
 
 	if _, err := c.Search("q", "en", 10, 0); err != nil {
@@ -200,7 +200,7 @@ func TestClient_NegativeCache(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, 5*time.Second, 0, "", "", nil)
+	c := New(srv.URL, 5*time.Second, 0, nil, "", "", nil)
 
 	// First lookup misses in search index
 	u1, err1 := c.ResolveSourceURL("SSGOVO/unknown.html", "Unknown Topic", "en")

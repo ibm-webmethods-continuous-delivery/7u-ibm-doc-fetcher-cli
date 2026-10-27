@@ -1,0 +1,162 @@
+# Integration harness — proxy support for ibmdocs
+#
+# Two scenarios, each isolated on its own internal network.
+# The "target" fake IBM Docs server is shared between both.
+#
+# Run via: ./run.sh  (see README.md)
+#
+# Networks
+#   internet_sim  — target is reachable from here; proxies have outbound access
+#   plain_net     — ibmdocs ↔ proxy_plain (no TLS inspection)
+#   tls_net       — ibmdocs ↔ proxy_tls   (TLS inspection, MITM CA required)
+
+networks:
+  # Simulated "internet" segment — only proxy containers can reach target
+  internet_sim:
+    driver: bridge
+    internal: true
+  # Client-side network for scenario 1 (plain proxy)
+  plain_net:
+    driver: bridge
+    internal: true
+  # Client-side network for scenario 2 (TLS-inspect proxy)
+  tls_net:
+    driver: bridge
+    internal: true
+
+volumes:
+  # mitmproxy generates its CA on first start and writes it here
+  mitm_plain_conf:
+  mitm_tls_conf:
+
+services:
+
+  # ── Fake IBM Docs CDN target ──────────────────────────────────────────────
+  # nginx serving HTTPS on :443 with a self-signed cert for 1.www.s81c.com.
+  # Only reachable from internet_sim (the proxy side), never from ibmdocs directly,
+  # which enforces that traffic genuinely flows through the proxy.
+  target:
+    build:
+      context: ./target
+      dockerfile: Dockerfile
+    container_name: ibmdocs_test_target
+    networks:
+      internet_sim:
+        aliases:
+          - 1.www.s81c.com   # ibmdocs sends requests to this hostname
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate",
+             "https://127.0.0.1/healthz"]
+      interval: 3s
+      retries: 20
+
+  # ── Proxy: scenario 1 — plain CONNECT (no TLS inspection) ────────────────
+  # mitmproxy with --ignore-hosts .* tunnels all HTTPS without intercepting it.
+  # The proxy's CA is never involved; ibmdocs does NOT need --tls-ca-bundle.
+  proxy_plain:
+    build:
+      context: ./proxy
+      dockerfile: Dockerfile
+    container_name: ibmdocs_test_proxy_plain
+    tmpfs:
+      - /tmp
+    volumes:
+      - mitm_plain_conf:/home/mitmproxy/.mitmproxy
+    environment:
+      - MITM_MODE=plain
+    healthcheck:
+      test: ["CMD", "test", "-f",
+             "/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem"]
+      interval: 2s
+      retries: 30
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks:
+      - internet_sim
+      - plain_net
+
+  # ── Proxy: scenario 2 — TLS inspection (full MITM) ───────────────────────
+  # mitmproxy default mode — intercepts and re-signs all HTTPS.
+  # ibmdocs must supply --tls-ca-bundle pointing at the proxy CA cert.
+  proxy_tls:
+    build:
+      context: ./proxy
+      dockerfile: Dockerfile
+    container_name: ibmdocs_test_proxy_tls
+    tmpfs:
+      - /tmp
+    volumes:
+      - mitm_tls_conf:/home/mitmproxy/.mitmproxy
+    environment:
+      - MITM_MODE=tls
+    healthcheck:
+      test: ["CMD", "test", "-f",
+             "/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem"]
+      interval: 2s
+      retries: 30
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks:
+      - internet_sim
+      - tls_net
+
+  # ── Scenario 1 runner ─────────────────────────────────────────────────────
+  # ibmdocs with --proxy only; no --tls-ca-bundle.
+  # The data volume is injected by run.sh with `docker compose run -v`.
+  run_plain:
+    image: ibmdocs:test
+    depends_on:
+      proxy_plain:
+        condition: service_healthy
+      target:
+        condition: service_healthy
+    environment:
+      - IBMDOCS_CDN_BASE_URL=https://1.www.s81c.com
+    entrypoint: ["/ibmdocs"]
+    command:
+      - "--proxy"
+      - "http://proxy_plain:3128"
+      - "--data"
+      - "/tmp/data"
+      - "--delay"
+      - "0"
+      - "fetch"
+      - "https://www.ibm.com/docs/en/bob?topic=overview-getting-started"
+      - "--recursive"
+      - "--depth"
+      - "1"
+    networks:
+      - plain_net
+
+  # ── Scenario 2 runner ─────────────────────────────────────────────────────
+  # ibmdocs with --proxy AND --tls-ca-bundle (mitmproxy's CA cert).
+  # The mitm_tls_conf volume is mounted read-only to expose the CA cert.
+  # The data volume is injected by run.sh with `docker compose run -v`.
+  run_tls:
+    image: ibmdocs:test
+    depends_on:
+      proxy_tls:
+        condition: service_healthy
+      target:
+        condition: service_healthy
+    volumes:
+      - mitm_tls_conf:/mitm:ro
+    environment:
+      - IBMDOCS_CDN_BASE_URL=https://1.www.s81c.com
+    entrypoint: ["/ibmdocs"]
+    command:
+      - "--proxy"
+      - "http://proxy_tls:3128"
+      - "--tls-ca-bundle"
+      - "/mitm/mitmproxy-ca-cert.pem"
+      - "--data"
+      - "/tmp/data"
+      - "--delay"
+      - "0"
+      - "fetch"
+      - "https://www.ibm.com/docs/en/bob?topic=overview-getting-started"
+      - "--recursive"
+      - "--depth"
+      - "1"
+    networks:
+      - tls_net

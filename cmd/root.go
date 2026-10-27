@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli/internal/config"
+	"github.com/ibm-webmethods-aftermarket-tools/7u-ibm-doc-fetcher-cli/internal/ibmdocs"
 )
 
 // errPartialFailure is returned when one or more topics fail but others succeed.
@@ -77,6 +78,23 @@ func init() {
 		"How long a cached entry stays valid before a plain fetch re-hits the network "+
 			"(e.g. 720h = 30 days, 24h, 0 to always treat cache as stale). env: IBMDOCS_CACHE_TTL. "+
 			"Use --refresh on fetch/fetch-file to force a re-fetch for a single invocation regardless of this value.")
+
+	f.StringVar(&cfg.ProxyURL, "proxy",
+		envOr(config.EnvProxy, ""),
+		"HTTP/HTTPS proxy URL (e.g. http://proxy.corp:3128). "+
+			"Overrides HTTP_PROXY/HTTPS_PROXY env vars. env: IBMDOCS_PROXY")
+
+	f.StringVar(&cfg.TLSCABundle, "tls-ca-bundle",
+		envOr(config.EnvTLSCABundle, ""),
+		"Path to a PEM CA bundle to append to the system certificate pool. "+
+			"Required when a TLS-inspecting proxy uses a private CA not already in /etc/ssl/certs/. "+
+			"env: IBMDOCS_TLS_CA_BUNDLE")
+
+	// Validate proxy/TLS flags at startup so the user gets a clear error
+	// before any network call is attempted.
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		return ibmdocs.ValidateTransportConfig(cfg.ProxyURL, cfg.TLSCABundle)
+	}
 }
 
 // envOr returns the environment variable value or fallback.

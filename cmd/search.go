@@ -44,7 +44,11 @@ IBM Docs Search API (1.www.s81c.com — no auth required).`,
 
 		requestLogPath := filepath.Join(cfg.DataDir, "requests.log")
 
-		client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, cfg.Delay, debugDir, requestLogPath, logger)
+		transport, err := ibmdocs.BuildTransport(cfg.ProxyURL, cfg.TLSCABundle)
+		if err != nil {
+			return err
+		}
+		client := ibmdocs.New(cfg.CDNBaseURL, config.DefaultRequestTimeout, cfg.Delay, transport, debugDir, requestLogPath, logger)
 
 		var allHits []ibmdocs.SearchHit
 		start := 0

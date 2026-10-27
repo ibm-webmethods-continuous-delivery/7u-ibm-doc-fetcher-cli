@@ -337,6 +337,67 @@ only JSON and Markdown, no binary blobs.
 | `--cache-ttl` | `720h` (30 days) | How long a cached entry stays valid before a plain fetch re-hits the network (env: `IBMDOCS_CACHE_TTL`); `0` always treats the cache as stale, `--refresh` bypasses it unconditionally |
 | `--cdn-base-url` | `https://1.www.s81c.com` | CDN base URL (env: `IBMDOCS_CDN_BASE_URL`) |
 | `--http-debug` | false | Dump every HTTP request/response to `<data>/debug/` |
+| `--proxy` | _(none)_ | Explicit proxy URL (e.g. `http://proxy.corp:3128`). Overrides `HTTP_PROXY`/`HTTPS_PROXY` env vars. env: `IBMDOCS_PROXY` |
+| `--tls-ca-bundle` | _(none)_ | Path to a PEM CA bundle appended to the system certificate pool. Needed when a TLS-inspecting proxy signs traffic with a private CA not in `/etc/ssl/certs/`. env: `IBMDOCS_TLS_CA_BUNDLE` |
+
+### Air-gapped / proxy environments
+
+When running behind a corporate proxy with TLS inspection, two flags cover all
+cases:
+
+**Case 1 — proxy without TLS inspection (or the proxy CA is already trusted):**
+
+```sh
+# Binary
+ibmdocs --proxy http://proxy.corp:3128 fetch "https://www.ibm.com/docs/..."
+
+# Container — pass proxy settings via environment variables
+docker run --rm \
+  -e IBMDOCS_PROXY=http://proxy.corp:3128 \
+  -v ~/t/ibmdocs-data:/data \
+  ibmdocs:latest --data /data \
+  fetch "https://www.ibm.com/docs/..."
+```
+
+**Case 2 — proxy with TLS inspection using a private CA:**
+
+The proxy re-signs all HTTPS traffic with its own certificate authority. You
+need to provide the CA bundle so the tool can verify the proxy's certificates.
+
+```sh
+# Binary — point at the bundle on disk
+ibmdocs \
+  --proxy http://proxy.corp:3128 \
+  --tls-ca-bundle /etc/ssl/certs/corp-ca-bundle.pem \
+  fetch "https://www.ibm.com/docs/..."
+
+# Container — mount the bundle into the container
+docker run --rm \
+  -v ~/t/ibmdocs-data:/data \
+  -v /etc/ssl/certs/corp-ca-bundle.pem:/corp-ca.pem:ro \
+  ibmdocs:latest \
+  --data /data \
+  --proxy http://proxy.corp:3128 \
+  --tls-ca-bundle /corp-ca.pem \
+  fetch "https://www.ibm.com/docs/..."
+
+# Container — using environment variables
+docker run --rm \
+  -e IBMDOCS_PROXY=http://proxy.corp:3128 \
+  -e IBMDOCS_TLS_CA_BUNDLE=/corp-ca.pem \
+  -v ~/t/ibmdocs-data:/data \
+  -v /etc/ssl/certs/corp-ca-bundle.pem:/corp-ca.pem:ro \
+  ibmdocs:latest --data /data \
+  fetch "https://www.ibm.com/docs/..."
+```
+
+> **Note:** `--tls-ca-bundle` appends to — it does not replace — the system
+> certificate pool already baked into the image. Standard public CAs remain
+> trusted. Only pass `--tls-ca-bundle` if placing the CA certificate in
+> `/etc/ssl/certs/` on the host (and bind-mounting it) is not an option.
+>
+> Both flags are validated before any network call is attempted, so a bad path
+> or an unparseable proxy URL fails immediately with a clear error message.
 
 ---
 

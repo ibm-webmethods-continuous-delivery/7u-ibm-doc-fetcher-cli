@@ -22,18 +22,27 @@ const (
 	// this for fast-moving products or a specific invocation.
 	DefaultCacheTTL = 30 * 24 * time.Hour
 
-	EnvCDNBaseURL = "IBMDOCS_CDN_BASE_URL"
-	EnvCacheTTL   = "IBMDOCS_CACHE_TTL"
+	EnvCDNBaseURL  = "IBMDOCS_CDN_BASE_URL"
+	EnvCacheTTL    = "IBMDOCS_CACHE_TTL"
+	EnvProxy       = "IBMDOCS_PROXY"
+	EnvTLSCABundle = "IBMDOCS_TLS_CA_BUNDLE"
 )
 
 // Config is populated from global flags and passed into every command.
 type Config struct {
-	DataDir    string
-	Lang       string
-	Verbose    bool
-	NoColor    bool
-	HTTPDebug  bool
-	CDNBaseURL string
-	Delay      time.Duration
-	CacheTTL   time.Duration
+	DataDir      string
+	Lang         string
+	Verbose      bool
+	NoColor      bool
+	HTTPDebug    bool
+	CDNBaseURL   string
+	Delay        time.Duration
+	CacheTTL     time.Duration
+	// ProxyURL is an explicit HTTP/HTTPS proxy URL (e.g. "http://proxy.corp:3128").
+	// When non-empty it overrides any HTTP_PROXY / HTTPS_PROXY environment variables.
+	ProxyURL     string
+	// TLSCABundle is a path to an additional PEM CA bundle to append to the
+	// system certificate pool. Needed when the proxy performs TLS inspection
+	// and its signing CA is not already present in /etc/ssl/certs/.
+	TLSCABundle  string
 }
